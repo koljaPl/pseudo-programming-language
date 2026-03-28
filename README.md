@@ -1,1 +1,1 @@
-# pseudo-programming-language
+# The Pseudo Programming Language
