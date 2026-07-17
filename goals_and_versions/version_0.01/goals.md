@@ -1,7 +1,6 @@
-Version 0.01 Alpha Goals
+# Version 0.01 — Alpha Goals
 
-Since this is the very first version, don’t expect too much, but I plan to implement all standart
-features of a transpiler programming language in C++, as well as the following features:
+As this is the very first version, don't expect too much. I plan to implement the standard features of a transpiled programming language in C++, as well as the following:
 
 - Basic types
 - Literals
@@ -15,12 +14,13 @@ features of a transpiler programming language in C++, as well as the following f
 - Arrays
 - Indexing
 - Strings
-- for-each
+- `for-each`
 - Comments
 - Statement termination
 
-The main goal is to implement a complete minimal transpilation pipeline:
+The main goal is to implement a complete, minimal transpilation pipeline:
 
+```text
 Source code
 -> Lexer
 -> Tokens
@@ -30,250 +30,324 @@ Source code
 -> Type checking
 -> C++20 code generation
 -> Compilation with g++
+```
 
-A detailed description of what will be included in the first version:
+Below is a detailed description of what the first version will include.
 
-1. Basic Types:
-    Only 5 basic types:
-    int    = signed 64-bit integer          -> std::int64_t
-    bool   = true or false                  -> bool
-    char   = one byte or an ASCII character -> chat
-    string = a sequence of bytes            -> std::string
-    void   = no return value                -> void
+## 1. Basic Types
 
-2. Literals:
-    It's as simple as it gets:
-    123
-    0
-    -42
-    true
-    false
-    “hello” - string
-    ‘a’ - char
+Only five basic types:
 
-3. Variables:
-    For now, only explicit declarations:
-    int x = 10
-    string name = “Nicklas”
+```text
+int    = signed 64-bit integer          -> std::int64_t
+bool   = true or false                  -> bool
+char   = one byte or an ASCII character -> char
+string = a sequence of bytes            -> std::string
+void   = no return value                -> void
+```
 
-    In future versions, we’ll add support for type inference:
-    x := 10
-    name := “Nicklas”
+## 2. Literals
 
-    Also, assignment:
-    x = 20
+It's as simple as it gets:
 
-    And compound assignments:
-    x += 5
-    x -= 2
-    x *= 3
-    x /= 2
-    x %= 10
+```text
+123
+0
+-42
+true
+false
+“hello”  - string
+‘a’      - char
+```
 
-4. Arithmetic Operations:
-    Base:
-    +
-    -
-    *
-    /
-    %
+## 3. Variables
 
-    Also unary:
-    -x
-    +x
+For now, only explicit declarations:
 
-5. Comparisons and Logic:
-    Operators:
-    ==
-    !=
-    <
-    <=
-    >
-    >=
+```text
+int x = 10
+string name = “Nicklas”
+```
 
-    Logical operators:
-    && (and)
-    || (or)
-    ! (not)
+In future versions, we'll add support for type inference:
 
-    and of course:
-    ()
+```text
+x := 10
+name := “Nicklas”
+```
 
-6. Instructions:
-    The first version must include:
-    variable declaration
-    assignment
-    expression statement
-    block
-    if / else
-    while
-    for-range
-    return
-    break
+Assignment:
+
+```text
+x = 20
+```
+
+Compound assignments:
+
+```text
+x += 5
+x -= 2
+x *= 3
+x /= 2
+x %= 10
+```
+
+## 4. Arithmetic Operations
+
+Basic operators:
+
+```text
++
+-
+*
+/
+%
+```
+
+Unary operators:
+
+```text
+-x
++x
+```
+
+## 5. Comparisons and Logic
+
+Comparison operators:
+
+```text
+==
+!=
+<
+<=
+>
+>=
+```
+
+Logical operators:
+
+```text
+&& (and)
+|| (or)
+!  (not)
+```
+
+And, of course, parentheses:
+
+```text
+()
+```
+
+## 6. Statements
+
+The first version must include:
+
+- Variable declarations
+- Assignments
+- Expression statements
+- Blocks
+- `if` / `else`
+- `while`
+- `for-range`
+- `return`
+- `break`
+- `continue`
+
+`if`:
+
+```text
+if x > 0 {
+    print(x)
+} else {
+    print(0)
+}
+```
+
+`while`:
+
+```text
+while x < 10 {
+    x += 1
+}
+```
+
+`for-range`:
+
+```text
+for i in 0..n {
+    print(i)
+}
+```
+
+I'm not a fan of this approach, but it will be a turning point. In future versions, I'll add everything as it's used in C++ and Python, and I'll most likely recommend using those approaches instead.
+
+`break` and `continue`:
+
+```text
+while true {
+    if condition {
+        break
+    }
+
     continue
+}
+```
 
-    if:
-        if x > 0 {
-            print(x)
-        } else {
-            print(0)
-        }
-    
-    while:
-        while x < 10 {
-            x += 1
-        }
-    
-    for-range:
-        for i in 0..n {
-            print(i)
-        }
+## 7. Functions
 
-        I'm not a fan of this approach, but it will be a turning point. 
-        In future versions, I'll add everything as it's used in C++ and Python, 
-        and I'll most likely recommend using those specifically.
+Standard functions and functions within functions, following the Python model, without the complex systems found in C++:
 
-    break and continue:
-        while true {
-            if condition {
-                break
-            }
+```text
+int max_value(int a, int b) {
+    if a > b {
+        return a
+    }
 
-            continue
-        }
+    return b
+}
 
-7. Functions:
-    Standard functions and functions within functions, following the Python model,
-    without the complex systems found in C++
+void greet(string name) {
+    print(name)
+}
 
-    int max_value(int a, int b) {
-        if a > b {
-            return a
-        }
+int min_value(int a, int b) {
+    bool is_first_greater(int x, int y) {
+        return x > y
+    }
 
+    if is_first_greater(a, b) {
+        return a
+    } else {
         return b
     }
+}
+```
 
-    void greet(string name) {
-        print(name)
-    }
+## 8. Entry Point
 
-    int min_value(int a, int b) {
-        bool is_first_greater(int x, int y) {
-            return x > y
-        } 
+For a language used in competitive programming, a C++-style approach is best: the entry point is the `main` function in the file.
 
-        if is_greater(a, b) {
-            return a
-        } else {
-            return b
-        }
-    } // i know its really dumb
+## 9. Input and Output
 
-8. Entry Point
-    For a language used in competitive programming, it's best to use a C++-style approach,
-    with the entry point being the `main` function in the file
+```text
+print(x)
+read_int()
+read_string()
+read_char()
+```
 
-9. Input and Output
-    print(x)
-    read_int()
-    read_string()
-    read_char()
+## 10. Arrays
 
-10. Arrays
-    For now, it will only support `vector<type>` (just like in C++),
-    but only for testing purposes! Later (in future versions, or perhaps even in this one),
-    we'll also support these types of arrays, something like that:
+For now, only `vector<type>` (as in C++) will be supported, and only for testing purposes. Later—perhaps even in this version—we'll also support the following array forms:
 
-    Two options:
-    Standard C++:
-    `vector<type> bla_bla(x, x)` and `array<type, x>`
-    And in Python:
-    `[type]`
+```text
+Standard C++:
+vector<type> bla_bla(x, x)
+array<type, x>
 
-11. Indexing
-    nums[i]
-    text[i]
+Python:
+[type]
+```
 
-    And assignment:
-    nums[i] = 10
+## 11. Indexing
 
-12. Strings
-    string s = “hello”
+```text
+nums[i]
+text[i]
+```
 
-    s[i]
-    len(s)
-    s += “ world”
-    s == “hello”
+Assignment by index:
 
-    Useful built-in operations:
-    s.length()
-    s.push(ch)
-    substring(s, left, right)
+```text
+nums[i] = 10
+```
 
-    for ch in text {
-        print(ch)
-    }
+## 12. Strings
 
-13. for-each
-    for value in values {
-        print(value)
-    }
+```text
+string s = “hello”
 
-    for ch in text {
-        print(ch)
-    }
+s[i]
+len(s)
+s += “ world”
+s == “hello”
+```
 
-    This is a copy; starting with version 0.02, there will be references like in C++
+Useful built-in operations:
 
-14. Comments
-    For now, // is a comment; later, when language settings become available,
-    this can be changed. It’s like this for now because the C++ syntax is similar,
-    and so far the // operator isn’t used anywhere.
+```text
+s.length()
+s.push(ch)
+substring(s, left, right)
+```
 
-15. Line Break
-    For now, there will only be a semicolon ( ; ), but just like with arrays,
-    this is only for testing purposes; in the near future (in the next update),
-    we'll have the following:
+```text
+for ch in text {
+    print(ch)
+}
+```
 
-    A line break ( Enter ) terminates a statement.
-    A semicolon ( ; ) can also terminate a statement.
-    Line breaks inside (), [], and after statements are ignored.
+## 13. `for-each`
 
+```text
+for value in values {
+    print(value)
+}
 
-Additional Information:
-Backend:
-    For now, only C++20 and g++. You'll be able to change this in the settings later.
+for ch in text {
+    print(ch)
+}
+```
 
+This is a copy; starting with version 0.02, there will be references, as in C++.
 
-Completion Criteria:
+## 14. Comments
+
+For now, `//` starts a comment. Later, when language settings become available, this can be changed. It is used for now because the syntax is similar to C++ and the `//` operator is not used anywhere yet.
+
+## 15. Statement Termination
+
+For now, only a semicolon (`;`) terminates a statement. As with arrays, this is only for testing purposes. In the near future (the next update), the following will be supported:
+
+- A line break (`Enter`) terminates a statement.
+- A semicolon (`;`) can also terminate a statement.
+- Line breaks inside `()`, `[]`, and after statements are ignored.
+
+## Additional Information
+
+### Backend
+
+For now, only C++20 and `g++` are supported. You'll be able to change this in the settings later.
+
+### Completion Criteria
 
 Version 0.01 Alpha is complete when the transpiler can correctly process programs containing:
 
-Literals and arithmetic expressions
-Variables and assignments
-Conditions and loops
-Top-level functions and function calls
-A valid main entry point
-Basic input and output
-Basic string operations
-Clear lexical, syntax, name-resolution, and type errors
+- Literals and arithmetic expressions
+- Variables and assignments
+- Conditions and loops
+- Top-level functions and function calls
+- A valid `main` entry point
+- Basic input and output
+- Basic string operations
+- Clear lexical, syntax, name-resolution, and type errors
 
 For every required feature, the project should include:
 
-lexer tests
-parser and AST tests
-semantic-analysis tests
-code-generation tests
-end-to-end compilation and execution tests
+- Lexer tests
+- Parser and AST tests
+- Semantic-analysis tests
+- Code-generation tests
+- End-to-end compilation and execution tests
 
 Stretch goals are not required for Version 0.01 to be considered complete.
 
-
-I also plan to describe how my language will work in principle and its main concepts.
+I also plan to describe, in principle, how my language will work and its main concepts.
 
 Additionally, some things may be added during development, so here is a list of everything that might be added along with the dates:
 
+```text
 DD.MM.YYYY - Change title
+```
 
-New ideas should not automatically become requirements for Version 0.01.
+New ideas should not automatically become requirements for Version 0.01
