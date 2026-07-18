@@ -7,7 +7,7 @@ In this file, I will outline what I will be doing and in what order:
 
 Source code
     -
-Project Initilization
+Project Initialization
     -
 Lexer
     -
@@ -51,7 +51,7 @@ And here are the stages of the project:
 12. Control-flow checking
 13. General top-level functions
 14. Strings and chars
-15. vector<T> and indexing
+15. `vector<T>` and indexing
 16. Runtime input/output
 17. for-range and for-each
 18. Lowering
