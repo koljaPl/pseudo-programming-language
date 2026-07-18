@@ -34,3 +34,26 @@ Runtime library
 Compilation with g++
     -
 Executable Code
+
+And here are the stages of the project:
+
+1. Specification and EBNF
+2. CMake, CLI, SourceManager, diagnostics
+3. Tokeniser and lexer
+4. Expression AST and expression parser
+5. Statements, blocks and function parser
+6. AST printer
+7. Minimal ‘main’ + ‘print’ + first C++ code generation
+8. TypeContext, symbols and scopes
+9. Declaration collection
+10. Name resolution
+11. Type checking
+12. Control-flow checking
+13. General top-level functions
+14. Strings and chars
+15. vector<T> and indexing
+16. Runtime input/output
+17. for-range and for-each
+18. Lowering
+19. Reliable g++ execution
+20. Error recovery and a complete test suite
