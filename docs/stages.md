@@ -57,3 +57,10 @@ And here are the stages of the project:
 18. Lowering
 19. Reliable g++ execution
 20. Error recovery and a complete test suite
+
+Language:               The Pseudo Programming Language
+File extension:         .tpp
+Compiler command:       pseudo
+C++ namespace:          tpp
+CMake library:          tpp_compiler
+CMake alias:            tpp::compiler
