@@ -1,0 +1,10 @@
+#pragma once
+
+#include <string_view>
+
+namespace tpp {
+
+inline constexpr std::string_view version =
+    "@PROJECT_VERSION@-@TPP_PRERELEASE@";
+
+}
