@@ -72,14 +72,16 @@ For now, only explicit declarations:
 
 ```text
 int x = 10
-string name = “Nicklas”
+string name = "Nicklas"
 ```
+
+We use ASCII quotation marks
 
 In future versions, we'll add support for type inference:
 
 ```text
 x := 10
-name := “Nicklas”
+name := "Nicklas"
 ```
 
 Assignment:
@@ -185,6 +187,9 @@ for i in 0..n {
 }
 ```
 
+0..n  - right-hand boundary excluded: [0, n)
+0..=n - right-hand boundary included:    [0, n]
+
 I'm not a fan of this approach, but it will be a turning point. In future versions, I'll add everything as it's used in C++ and Python, and I'll most likely recommend using those approaches instead.
 
 `break` and `continue`:
@@ -228,6 +233,8 @@ int min_value(int a, int b) {
     }
 }
 ```
+
+Nested functions are included in the first version.
 
 ## 8. Entry Point
 
@@ -313,7 +320,7 @@ For now, `//` starts a comment. Later, when language settings become available, 
 
 ## 15. Statement Termination
 
-For now, only a semicolon (`;`) terminates a statement. As with arrays, this is only for testing purposes. In the near future (the next update), the following will be supported:
+For now, for the first version, only a semicolon (`;`) terminates a statement. As with arrays, this is only for testing purposes. In the near future (the next update), the following will be supported:
 
 - A line break (`Enter`) terminates a statement.
 - A semicolon (`;`) can also terminate a statement.
