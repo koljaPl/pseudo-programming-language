@@ -165,9 +165,9 @@ The first version must include:
 
 ```text
 if x > 0 {
-    print(x)
+    print(x);
 } else {
-    print(0)
+    print(0);
 }
 ```
 
@@ -175,7 +175,7 @@ if x > 0 {
 
 ```text
 while x < 10 {
-    x += 1
+    x += 1;
 }
 ```
 
@@ -183,7 +183,7 @@ while x < 10 {
 
 ```text
 for i in 0..n {
-    print(i)
+    print(i);
 }
 ```
 
@@ -197,10 +197,10 @@ I'm not a fan of this approach, but it will be a turning point. In future versio
 ```text
 while true {
     if condition {
-        break
+        break;
     }
 
-    continue
+    continue;
 }
 ```
 
@@ -211,34 +211,45 @@ Standard functions and functions within functions, following the Python model, w
 ```text
 int max_value(int a, int b) {
     if a > b {
-        return a
+        return a;
     }
 
-    return b
+    return b;
 }
 
 void greet(string name) {
-    print(name)
+    print(name);
 }
 
 int min_value(int a, int b) {
     bool is_first_greater(int x, int y) {
-        return x > y
+        return x > y;
     }
 
     if is_first_greater(a, b) {
-        return a
+        return a;
     } else {
-        return b
+        return b;
     }
 }
 ```
 
-Nested functions are included in the first version.
+Nested functions are included in the first version. Nested functions are supported, but they cannot capture local variables or parameters from enclosing functions.
 
 ## 8. Entry Point
 
 For a language used in competitive programming, a C++-style approach is best: the entry point is the `main` function in the file.
+
+A valid program must contain exactly one top-level entry-point function:
+
+int main()
+
+The main function:
+
+- must be declared at the top level;
+- must not have parameters;
+- must return int;
+- must occur exactly once.
 
 ## 9. Input and Output
 
@@ -278,12 +289,12 @@ nums[i] = 10
 ## 12. Strings
 
 ```text
-string s = “hello”
+string s = "hello"
 
 s[i]
 len(s)
-s += “ world”
-s == “hello”
+s += " world"
+s == "hello"
 ```
 
 Useful built-in operations:
@@ -296,7 +307,7 @@ substring(s, left, right)
 
 ```text
 for ch in text {
-    print(ch)
+    print(ch);
 }
 ```
 
@@ -304,11 +315,11 @@ for ch in text {
 
 ```text
 for value in values {
-    print(value)
+    print(value);
 }
 
 for ch in text {
-    print(ch)
+    print(ch);
 }
 ```
 
