@@ -31,8 +31,11 @@ program =
     ;
 
 top_level_declaration =
-    function_declaration
+      function_declaration
+    | variable_declaration
     ;
+
+(* A variable declaration at the top level declares a global variable. *)
 
 function_declaration =
     return_type,
@@ -408,24 +411,62 @@ BOOLEAN_LITERAL =
     ;
 
 STRING_LITERAL =
-    '"',
-    { STRING_CHARACTER },
-    '"'
+    DOUBLE_QUOTE,
+    { STRING_ELEMENT },
+    DOUBLE_QUOTE
+    ;
+
+STRING_ELEMENT =
+      STRING_CHARACTER
+    | ESCAPE_SEQUENCE
     ;
 
 STRING_CHARACTER =
-    ? any source character except double quote, carriage return, and newline ?
+    ? any source byte except double quote, backslash,
+      carriage return, and newline ?
     ;
 
 CHARACTER_LITERAL =
-    "'",
-    CHARACTER_CONTENT,
-    "'"
+    SINGLE_QUOTE,
+    CHARACTER_ELEMENT,
+    SINGLE_QUOTE
     ;
 
-CHARACTER_CONTENT =
-    ? exactly one single-byte source character except single quote,
+CHARACTER_ELEMENT =
+      CHARACTER_CHARACTER
+    | ESCAPE_SEQUENCE
+    ;
+
+CHARACTER_CHARACTER =
+    ? exactly one ASCII byte except single quote, backslash,
       carriage return, and newline ?
+    ;
+
+ESCAPE_SEQUENCE =
+    BACKSLASH,
+    ESCAPE_CODE
+    ;
+
+ESCAPE_CODE =
+      BACKSLASH
+    | DOUBLE_QUOTE
+    | SINGLE_QUOTE
+    | "n"
+    | "r"
+    | "t"
+    | "0"
+    ;
+
+DOUBLE_QUOTE =
+    ? ASCII U+0022, double quote ?
+    ;
+
+SINGLE_QUOTE =
+    ? ASCII U+0027, single quote ?
+    ;
+
+BACKSLASH =
+    ? ASCII U+005C, backslash ?
     ;
 
 
