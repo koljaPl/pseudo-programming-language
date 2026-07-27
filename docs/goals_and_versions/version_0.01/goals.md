@@ -428,4 +428,4 @@ DD.MM.YYYY - Change title
 
 New ideas should not automatically become requirements for Version 0.01
 
-28.07.2026 (01:04 Berlin Time Zone) - Added info about global variables and escape ssequences
+28.07.2026 (01:04 Berlin Time Zone) - Added info about global variables and escape sequences
