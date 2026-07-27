@@ -471,11 +471,15 @@ BACKSLASH =
 
 
 (* ============================================================
- * Keywords
+ * Reserved words
  *
- * The lexer first reads an identifier-shaped sequence.
- * If its text equals one of these words, it emits a keyword
- * token instead of IDENTIFIER.
+ * The lexer first reads an identifier-shaped sequence and then
+ * classifies it as:
+ *
+ * - a keyword;
+ * - a boolean literal;
+ * - a textual operator;
+ * - or an IDENTIFIER.
  * ============================================================ *)
 
 RESERVED_WORD =
