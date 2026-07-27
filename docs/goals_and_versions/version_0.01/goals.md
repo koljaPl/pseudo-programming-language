@@ -60,6 +60,12 @@ false
 ‘a’      - char
 ```
 
+In this case, -42 is parsed as two tokens (Minus(‘-’)
+IntegerLiteral(‘42’)), and the parser will then construct:
+UnaryExpr
+├── operator: Minus
+└── IntegerLiteralExpr(42)
+
 ## 3. Variables
 
 For now, only explicit declarations:
