@@ -1,7 +1,10 @@
 #pragma once
 
 #include "pseudo/diagnostics/diagnostic_engine.hpp"
+#include "pseudo/lexer/token.hpp"
 #include "pseudo/source/source_manager.hpp"
+
+#include <vector>
 
 namespace tpp {
 
@@ -23,9 +26,18 @@ public:
         return diagnostics_;
     }
 
+    [[nodiscard]] std::vector<Token>& tokens() noexcept {
+        return tokens_;
+    }
+
+    [[nodiscard]] const std::vector<Token>& tokens() const noexcept {
+        return tokens_;
+    }
+
 private:
     SourceManager sources_;
     DiagnosticEngine diagnostics_;
+    std::vector<Token> tokens_;
 };
 
 }

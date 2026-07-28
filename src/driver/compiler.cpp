@@ -1,6 +1,7 @@
 #include "pseudo/driver/compiler.hpp"
 
 #include "pseudo/driver/compilation_session.hpp"
+#include "pseudo/lexer/lexer.hpp"
 
 #include <variant>
 
@@ -15,6 +16,10 @@ bool Compiler::compile(
         session.diagnostics().error(error->message);
         return false;
     }
+
+    const auto source = std::get<SourceId>(result);
+    Lexer lexer{source, session.sources(), session.diagnostics()};
+    session.tokens() = lexer.lex();
 
     return !session.diagnostics().has_errors();
 }
