@@ -25,6 +25,21 @@ tpp_add_test(
 )
 
 tpp_add_test(
+    lexer_tests
+    lexer_tests.cpp
+)
+
+tpp_add_test(
+    driver_tests
+    driver_tests.cpp
+)
+
+target_compile_definitions(
+    driver_tests
+    PRIVATE TPP_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+
+tpp_add_test(
     cli_tests
     cli_tests.cpp
     "${PROJECT_SOURCE_DIR}/app/cli.cpp"
@@ -121,6 +136,35 @@ tpp_add_cli_integration_test(
     empty_source
     EXIT_CODE 0
     ARGS "${empty_source}"
+)
+
+set(valid_lexical_source
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/valid_lexical.tpp"
+)
+
+tpp_add_cli_integration_test(
+    valid_lexical_source
+    EXIT_CODE 0
+    ARGS "${valid_lexical_source}"
+)
+
+set(invalid_lexical_source
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/invalid_lexical.tpp"
+)
+
+string(
+    CONCAT
+    invalid_lexical_diagnostic
+    "${invalid_lexical_source}:1:1: error: unknown character '@'\n"
+    "  1 | @\n"
+    "    | ^\n"
+)
+
+tpp_add_cli_integration_test(
+    invalid_lexical_source
+    EXIT_CODE 1
+    STDERR "${invalid_lexical_diagnostic}"
+    ARGS "${invalid_lexical_source}"
 )
 
 set(missing_source "${CMAKE_CURRENT_SOURCE_DIR}/data/does-not-exist.tpp")
