@@ -30,6 +30,11 @@ tpp_add_test(
 )
 
 tpp_add_test(
+    expression_parser_tests
+    expression_parser_tests.cpp
+)
+
+tpp_add_test(
     driver_tests
     driver_tests.cpp
 )
