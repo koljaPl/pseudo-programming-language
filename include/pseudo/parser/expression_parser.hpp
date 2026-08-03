@@ -12,6 +12,7 @@
 namespace tpp {
 
 class DiagnosticEngine;
+class Parser;
 class SourceManager;
 
 class ExpressionParser {
@@ -25,6 +26,20 @@ public:
     [[nodiscard]] ExpressionPtr parse();
 
 private:
+    friend class Parser;
+
+    struct ValidatedTokenStream {
+    };
+
+    ExpressionParser(
+        std::span<const Token> tokens,
+        const SourceManager& sources,
+        DiagnosticEngine& diagnostics,
+        ValidatedTokenStream) noexcept;
+
+    [[nodiscard]] ExpressionPtr parse_prefix();
+    [[nodiscard]] std::size_t consumed_token_count() const noexcept;
+
     [[nodiscard]] ExpressionPtr parse_expression();
     [[nodiscard]] ExpressionPtr parse_logical_or();
     [[nodiscard]] ExpressionPtr parse_logical_and();
@@ -38,7 +53,7 @@ private:
     [[nodiscard]] ExpressionPtr parse_parenthesized();
     [[nodiscard]] ExpressionPtr parse_vector_construction();
 
-    [[nodiscard]] std::optional<VectorType> parse_vector_type();
+    [[nodiscard]] std::optional<ValueType> parse_value_type();
     [[nodiscard]] std::optional<SourceSpan> parse_argument_list(
         std::vector<ExpressionPtr>& arguments);
 

@@ -135,10 +135,32 @@ bool is_expression_delimiter(TokenKind kind) noexcept {
     switch (kind) {
     case TokenKind::end_of_file:
     case TokenKind::right_parenthesis:
+    case TokenKind::left_brace:
     case TokenKind::right_bracket:
     case TokenKind::right_brace:
     case TokenKind::comma:
     case TokenKind::semicolon:
+    case TokenKind::assign:
+    case TokenKind::plus_assign:
+    case TokenKind::minus_assign:
+    case TokenKind::star_assign:
+    case TokenKind::slash_assign:
+    case TokenKind::percent_assign:
+    case TokenKind::range_exclusive:
+    case TokenKind::range_inclusive:
+    case TokenKind::keyword_int:
+    case TokenKind::keyword_bool:
+    case TokenKind::keyword_char:
+    case TokenKind::keyword_string:
+    case TokenKind::keyword_void:
+    case TokenKind::keyword_if:
+    case TokenKind::keyword_else:
+    case TokenKind::keyword_while:
+    case TokenKind::keyword_for:
+    case TokenKind::keyword_in:
+    case TokenKind::keyword_return:
+    case TokenKind::keyword_break:
+    case TokenKind::keyword_continue:
         return true;
     default:
         return false;
@@ -151,18 +173,37 @@ ExpressionParser::ExpressionParser(
     std::span<const Token> tokens,
     const SourceManager& sources,
     DiagnosticEngine& diagnostics)
-    : tokens_{tokens}
-    , sources_{sources}
-    , diagnostics_{diagnostics} {
+    : ExpressionParser{
+          tokens,
+          sources,
+          diagnostics,
+          ValidatedTokenStream{}} {
     if (tokens_.empty()
         || tokens_.back().kind != TokenKind::end_of_file) {
         throw std::invalid_argument{
             "expression parser requires a trailing EOF token"};
     }
+
+    for (std::size_t index = 0; index + 1 < tokens_.size(); ++index) {
+        if (tokens_[index].kind == TokenKind::end_of_file) {
+            throw std::invalid_argument{
+                "expression parser requires exactly one trailing EOF token"};
+        }
+    }
+}
+
+ExpressionParser::ExpressionParser(
+    std::span<const Token> tokens,
+    const SourceManager& sources,
+    DiagnosticEngine& diagnostics,
+    ValidatedTokenStream) noexcept
+    : tokens_{tokens}
+    , sources_{sources}
+    , diagnostics_{diagnostics} {
 }
 
 ExpressionPtr ExpressionParser::parse() {
-    auto expression = parse_expression();
+    auto expression = parse_prefix();
 
     if (!expression) {
         synchronize();
@@ -176,6 +217,14 @@ ExpressionPtr ExpressionParser::parse() {
     }
 
     return expression;
+}
+
+ExpressionPtr ExpressionParser::parse_prefix() {
+    return parse_expression();
+}
+
+std::size_t ExpressionParser::consumed_token_count() const noexcept {
+    return index_;
 }
 
 ExpressionPtr ExpressionParser::parse_expression() {
@@ -497,7 +546,7 @@ ExpressionPtr ExpressionParser::parse_parenthesized() {
 }
 
 ExpressionPtr ExpressionParser::parse_vector_construction() {
-    auto type = parse_vector_type();
+    auto type = parse_value_type();
     if (!type.has_value()) {
         return nullptr;
     }
@@ -524,8 +573,21 @@ ExpressionPtr ExpressionParser::parse_vector_construction() {
         });
 }
 
-std::optional<VectorType> ExpressionParser::parse_vector_type() {
-    const auto opening_span = advance().span;
+std::optional<ValueType> ExpressionParser::parse_value_type() {
+    if (const auto scalar = scalar_type(current().kind);
+        scalar.has_value()) {
+        const auto span = advance().span;
+        return ValueType{
+            .span = span,
+            .node = *scalar,
+        };
+    }
+
+    if (!match(TokenKind::keyword_vector)) {
+        return std::nullopt;
+    }
+
+    const auto opening_span = previous().span;
 
     if (!match(TokenKind::less)) {
         report(
@@ -534,22 +596,14 @@ std::optional<VectorType> ExpressionParser::parse_vector_type() {
         return std::nullopt;
     }
 
-    std::optional<VectorElementType> element_type;
-
-    if (check(TokenKind::keyword_vector)) {
-        auto nested = parse_vector_type();
-        if (!nested.has_value()) {
-            return std::nullopt;
-        }
-
-        element_type = std::make_unique<VectorType>(
-            std::move(*nested));
-    } else if (const auto scalar = scalar_type(current().kind);
-               scalar.has_value()) {
-        advance();
-        element_type = *scalar;
-    } else {
+    auto element_type = parse_value_type();
+    if (!element_type.has_value()) {
         report_at_current("expected value type in vector type");
+        if (!at_end() && !check(TokenKind::greater)
+            && (check(TokenKind::keyword_void)
+                || !is_expression_delimiter(current().kind))) {
+            advance();
+        }
         return std::nullopt;
     }
 
@@ -560,9 +614,12 @@ std::optional<VectorType> ExpressionParser::parse_vector_type() {
         return std::nullopt;
     }
 
-    return VectorType{
+    return ValueType{
         .span = joined_span(opening_span, previous().span),
-        .element_type = std::move(*element_type),
+        .node = VectorType{
+            .element_type = std::make_unique<ValueType>(
+                std::move(*element_type)),
+        },
     };
 }
 

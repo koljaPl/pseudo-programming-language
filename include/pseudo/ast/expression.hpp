@@ -1,5 +1,6 @@
 #pragma once
 
+#include "pseudo/ast/type.hpp"
 #include "pseudo/common/source_span.hpp"
 
 #include <memory>
@@ -8,23 +9,6 @@
 #include <vector>
 
 namespace tpp {
-
-enum class ScalarTypeKind {
-    integer,
-    boolean,
-    character,
-    string,
-};
-
-struct VectorType;
-
-using VectorElementType =
-    std::variant<ScalarTypeKind, std::unique_ptr<VectorType>>;
-
-struct VectorType {
-    SourceSpan span;
-    VectorElementType element_type;
-};
 
 enum class UnaryOperator {
     plus,
@@ -99,7 +83,7 @@ struct MemberAccessExpression {
 };
 
 struct VectorConstructionExpression {
-    VectorType type;
+    ValueType type;
     std::vector<ExpressionPtr> arguments;
 };
 

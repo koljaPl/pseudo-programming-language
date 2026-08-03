@@ -44,6 +44,7 @@ using tpp::Token;
 using tpp::TokenKind;
 using tpp::UnaryExpression;
 using tpp::UnaryOperator;
+using tpp::ValueType;
 using tpp::VectorConstructionExpression;
 using tpp::VectorType;
 
@@ -82,6 +83,14 @@ template <typename Node>
 const Node& require_node(const Expression& expression)
 {
     const auto* node = std::get_if<Node>(&expression.node);
+    TPP_CHECK(node != nullptr);
+    return *node;
+}
+
+template <typename Node>
+const Node& require_type_node(const ValueType& type)
+{
+    const auto* node = std::get_if<Node>(&type.node);
     TPP_CHECK(node != nullptr);
     return *node;
 }
@@ -573,9 +582,11 @@ void vector_constructions_cover_types_arguments_and_postfix()
         const auto& construction =
             require_node<VectorConstructionExpression>(
                 require_success(result));
+        const auto& vector =
+            require_type_node<VectorType>(construction.type);
         const auto* scalar =
             std::get_if<ScalarTypeKind>(
-                &construction.type.element_type);
+                &vector.element_type->node);
         TPP_CHECK(scalar != nullptr);
         TPP_CHECK_EQ(*scalar, test_case.kind);
         TPP_CHECK(construction.arguments.empty());
@@ -585,17 +596,18 @@ void vector_constructions_cover_types_arguments_and_postfix()
     const auto& nested_construction =
         require_node<VectorConstructionExpression>(
             require_success(nested));
-    const auto* nested_type =
-        std::get_if<std::unique_ptr<VectorType>>(
-            &nested_construction.type.element_type);
+    const auto& outer_type =
+        require_type_node<VectorType>(nested_construction.type);
+    const auto* nested_type = std::get_if<VectorType>(
+        &outer_type.element_type->node);
     TPP_CHECK(nested_type != nullptr);
-    TPP_CHECK(*nested_type != nullptr);
     const auto* scalar =
-        std::get_if<ScalarTypeKind>(&(*nested_type)->element_type);
+        std::get_if<ScalarTypeKind>(
+            &nested_type->element_type->node);
     TPP_CHECK(scalar != nullptr);
     TPP_CHECK_EQ(*scalar, ScalarTypeKind::string);
     check_span(nested_construction.type.span, nested.source, 0, 22);
-    check_span((*nested_type)->span, nested.source, 7, 21);
+    check_span(outer_type.element_type->span, nested.source, 7, 21);
 
     const ParsingResult initialized{"vector<int>(n, 0)"};
     const auto& initialized_node =
@@ -1071,6 +1083,38 @@ void parser_requires_a_trailing_eof_token()
     bool threw = false;
     try {
         ExpressionParser parser{tokens, sources, diagnostics};
+        static_cast<void>(parser);
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+
+    TPP_CHECK(threw);
+    TPP_CHECK(!diagnostics.has_errors());
+
+    const std::vector<Token> early_eof_tokens{
+        Token{
+            .kind = TokenKind::end_of_file,
+            .span = SourceSpan{source, 0, 0},
+            .value = std::monostate{},
+        },
+        Token{
+            .kind = TokenKind::identifier,
+            .span = SourceSpan{source, 0, 1},
+            .value = std::monostate{},
+        },
+        Token{
+            .kind = TokenKind::end_of_file,
+            .span = SourceSpan{source, 1, 1},
+            .value = std::monostate{},
+        },
+    };
+
+    threw = false;
+    try {
+        ExpressionParser parser{
+            early_eof_tokens,
+            sources,
+            diagnostics};
         static_cast<void>(parser);
     } catch (const std::invalid_argument&) {
         threw = true;
