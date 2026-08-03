@@ -23,6 +23,7 @@ add_library(tpp_compiler STATIC
     src/diagnostics/diagnostic_engine.cpp
     src/lexer/lexer.cpp
     src/parser/expression_parser.cpp
+    src/parser/parser.cpp
     src/driver/compiler.cpp
 )
 
