@@ -35,6 +35,16 @@ tpp_add_test(
 )
 
 tpp_add_test(
+    program_parser_tests
+    program_parser_tests.cpp
+)
+
+tpp_add_test(
+    ast_printer_tests
+    ast_printer_tests.cpp
+)
+
+tpp_add_test(
     driver_tests
     driver_tests.cpp
 )
@@ -99,6 +109,7 @@ string(
     "Options:\n"
     "  -h, --help     Show this help message\n"
     "  -v, --version  Show version information\n"
+    "      --dump-ast Print the parsed AST\n"
 )
 
 tpp_add_cli_integration_test(
@@ -143,6 +154,13 @@ tpp_add_cli_integration_test(
     ARGS "${empty_source}"
 )
 
+tpp_add_cli_integration_test(
+    dump_empty_ast
+    EXIT_CODE 0
+    STDOUT "Program\n"
+    ARGS --dump-ast "${empty_source}"
+)
+
 set(valid_lexical_source
     "${CMAKE_CURRENT_SOURCE_DIR}/data/valid_lexical.tpp"
 )
@@ -151,6 +169,24 @@ tpp_add_cli_integration_test(
     valid_lexical_source
     EXIT_CODE 0
     ARGS "${valid_lexical_source}"
+)
+
+string(
+    CONCAT
+    valid_ast_output
+    "Program\n"
+    "  Function name=\"main\" return=int\n"
+    "    Parameters\n"
+    "    Block\n"
+    "      Return\n"
+    "        IntegerLiteral value=\"0\"\n"
+)
+
+tpp_add_cli_integration_test(
+    dump_valid_ast
+    EXIT_CODE 0
+    STDOUT "${valid_ast_output}"
+    ARGS "${valid_lexical_source}" --dump-ast
 )
 
 set(invalid_lexical_source
@@ -170,6 +206,39 @@ tpp_add_cli_integration_test(
     EXIT_CODE 1
     STDERR "${invalid_lexical_diagnostic}"
     ARGS "${invalid_lexical_source}"
+)
+
+tpp_add_cli_integration_test(
+    suppress_dump_on_lexical_error
+    EXIT_CODE 1
+    STDERR "${invalid_lexical_diagnostic}"
+    ARGS --dump-ast "${invalid_lexical_source}"
+)
+
+set(invalid_syntax_source
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/invalid_syntax.tpp"
+)
+
+string(
+    CONCAT
+    invalid_syntax_diagnostic
+    "${invalid_syntax_source}:1:9: error: expected expression\n"
+    "  1 | int x = }\n"
+    "    |         ^\n"
+)
+
+tpp_add_cli_integration_test(
+    invalid_syntax_source
+    EXIT_CODE 1
+    STDERR "${invalid_syntax_diagnostic}"
+    ARGS "${invalid_syntax_source}"
+)
+
+tpp_add_cli_integration_test(
+    suppress_dump_on_syntax_error
+    EXIT_CODE 1
+    STDERR "${invalid_syntax_diagnostic}"
+    ARGS --dump-ast "${invalid_syntax_source}"
 )
 
 set(missing_source "${CMAKE_CURRENT_SOURCE_DIR}/data/does-not-exist.tpp")
