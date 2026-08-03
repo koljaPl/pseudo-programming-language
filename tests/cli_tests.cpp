@@ -56,7 +56,8 @@ void help_is_printed_to_stdout()
             "\n"
             "Options:\n"
             "  -h, --help     Show this help message\n"
-            "  -v, --version  Show version information\n"));
+            "  -v, --version  Show version information\n"
+            "      --dump-ast Print the parsed AST\n"));
     TPP_CHECK(result.stderr_text.empty());
 }
 
@@ -102,6 +103,79 @@ void existing_empty_file_compiles_successfully()
     TPP_CHECK(result.stderr_text.empty());
 }
 
+void dump_ast_requires_an_input_file()
+{
+    const auto result = invoke({"--dump-ast"});
+
+    TPP_CHECK_EQ(result.exit_code, 2);
+    TPP_CHECK(result.stdout_text.empty());
+    TPP_CHECK_EQ(
+        result.stderr_text,
+        std::string{"pseudo: error: no input file\n"});
+}
+
+void dump_ast_accepts_the_flag_before_or_after_the_input()
+{
+    const auto input = std::filesystem::path(TPP_TEST_DATA_DIR) / "empty.tpp";
+    const auto input_text = input.string();
+
+    const auto before = invoke({"--dump-ast", input_text});
+    TPP_CHECK_EQ(before.exit_code, 0);
+    TPP_CHECK_EQ(before.stdout_text, std::string{"Program\n"});
+    TPP_CHECK(before.stderr_text.empty());
+
+    const auto after = invoke({input_text, "--dump-ast"});
+    TPP_CHECK_EQ(after.exit_code, 0);
+    TPP_CHECK_EQ(after.stdout_text, std::string{"Program\n"});
+    TPP_CHECK(after.stderr_text.empty());
+}
+
+void dump_ast_prints_a_complete_valid_program()
+{
+    const auto input =
+        std::filesystem::path(TPP_TEST_DATA_DIR) / "valid_lexical.tpp";
+    const auto result = invoke({"--dump-ast", input.string()});
+
+    TPP_CHECK_EQ(result.exit_code, 0);
+    TPP_CHECK_EQ(
+        result.stdout_text,
+        std::string{
+            "Program\n"
+            "  Function name=\"main\" return=int\n"
+            "    Parameters\n"
+            "    Block\n"
+            "      Return\n"
+            "        IntegerLiteral value=\"0\"\n"});
+    TPP_CHECK(result.stderr_text.empty());
+}
+
+void dump_ast_is_suppressed_for_lexical_and_syntax_errors()
+{
+    const auto lexical =
+        std::filesystem::path(TPP_TEST_DATA_DIR) / "invalid_lexical.tpp";
+    const auto lexical_result = invoke({"--dump-ast", lexical.string()});
+    TPP_CHECK_EQ(lexical_result.exit_code, 1);
+    TPP_CHECK(lexical_result.stdout_text.empty());
+    TPP_CHECK_EQ(
+        lexical_result.stderr_text,
+        lexical.string()
+            + ":1:1: error: unknown character '@'\n"
+              "  1 | @\n"
+              "    | ^\n");
+
+    const auto syntax =
+        std::filesystem::path(TPP_TEST_DATA_DIR) / "invalid_syntax.tpp";
+    const auto syntax_result = invoke({"--dump-ast", syntax.string()});
+    TPP_CHECK_EQ(syntax_result.exit_code, 1);
+    TPP_CHECK(syntax_result.stdout_text.empty());
+    TPP_CHECK_EQ(
+        syntax_result.stderr_text,
+        syntax.string()
+            + ":1:9: error: expected expression\n"
+              "  1 | int x = }\n"
+              "    |         ^\n");
+}
+
 void missing_file_is_a_compilation_error()
 {
     const auto input = std::filesystem::path(TPP_TEST_DATA_DIR) / "missing.tpp";
@@ -125,7 +199,14 @@ int main()
         {"version is printed to stdout", version_is_printed_to_stdout},
         {"unknown option is a usage error", unknown_option_is_a_usage_error},
         {"multiple input files are rejected", multiple_input_files_are_rejected},
-        {"existing empty file compiles successfully", existing_empty_file_compiles_successfully},
+        {"existing empty file compiles successfully",
+         existing_empty_file_compiles_successfully},
+        {"dump AST requires input", dump_ast_requires_an_input_file},
+        {"dump AST option order",
+         dump_ast_accepts_the_flag_before_or_after_the_input},
+        {"dump AST valid program", dump_ast_prints_a_complete_valid_program},
+        {"dump AST suppresses erroneous programs",
+         dump_ast_is_suppressed_for_lexical_and_syntax_errors},
         {"missing file is a compilation error", missing_file_is_a_compilation_error},
     });
 }
