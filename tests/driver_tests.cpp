@@ -1,5 +1,6 @@
 #include "test_support.hpp"
 
+#include "pseudo/ast/program.hpp"
 #include "pseudo/driver/compilation_session.hpp"
 #include "pseudo/driver/compiler.hpp"
 #include "pseudo/lexer/token.hpp"
@@ -35,6 +36,9 @@ void empty_source_produces_only_eof()
     TPP_CHECK_EQ(eof.span.source.value, std::size_t{0});
     TPP_CHECK_EQ(eof.span.begin, std::size_t{0});
     TPP_CHECK_EQ(eof.span.end, std::size_t{0});
+    TPP_CHECK(session.program().has_value());
+    TPP_CHECK(session.program()->declarations.empty());
+    TPP_CHECK(session.program()->span.empty());
 }
 
 void valid_source_produces_tokens_without_diagnostics()
@@ -64,6 +68,16 @@ void valid_source_produces_tokens_without_diagnostics()
     TPP_CHECK_EQ(
         eof.span.begin,
         session.sources().contents(eof.span.source).size());
+
+    TPP_CHECK(session.program().has_value());
+    TPP_CHECK_EQ(
+        session.program()->declarations.size(),
+        std::size_t{1});
+    const auto* function = std::get_if<tpp::FunctionDeclaration>(
+        &session.program()->declarations.front());
+    TPP_CHECK(function != nullptr);
+    TPP_CHECK_EQ(function->name, std::string{"main"});
+    TPP_CHECK(function->body != nullptr);
 }
 
 void lexical_error_fails_but_recovers_to_eof()
@@ -80,6 +94,7 @@ void lexical_error_fails_but_recovers_to_eof()
     TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
     TPP_CHECK_EQ(session.tokens().size(), std::size_t{1});
     TPP_CHECK_EQ(session.tokens().front().kind, tpp::TokenKind::end_of_file);
+    TPP_CHECK(!session.program().has_value());
 
     const auto diagnostics = session.diagnostics().diagnostics();
     TPP_CHECK_EQ(diagnostics.size(), std::size_t{1});
@@ -115,6 +130,53 @@ void missing_source_fails_without_tokens()
         diagnostics.front().message,
         std::string{"cannot open '"} + input.string() + '\'');
     TPP_CHECK(!diagnostics.front().primary_span.has_value());
+    TPP_CHECK(!session.program().has_value());
+}
+
+void syntax_error_fails_after_storing_the_recovered_program()
+{
+    tpp::CompilationSession session;
+    const tpp::Compiler compiler;
+
+    const bool succeeded =
+        compiler.compile(data_path("invalid_syntax.tpp"), session);
+
+    TPP_CHECK(!succeeded);
+    TPP_CHECK(session.program().has_value());
+    TPP_CHECK(session.diagnostics().has_errors());
+    TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
+    TPP_CHECK_EQ(
+        session.diagnostics().diagnostics().front().message,
+        std::string{"expected expression"});
+}
+
+void compilation_session_can_be_reused_without_stale_results()
+{
+    tpp::CompilationSession session;
+    const tpp::Compiler compiler;
+
+    TPP_CHECK(!compiler.compile(
+        data_path("invalid_lexical.tpp"),
+        session));
+    TPP_CHECK(session.diagnostics().has_errors());
+    TPP_CHECK(!session.program().has_value());
+
+    TPP_CHECK(compiler.compile(
+        data_path("valid_lexical.tpp"),
+        session));
+    TPP_CHECK(!session.diagnostics().has_errors());
+    TPP_CHECK(session.diagnostics().diagnostics().empty());
+    TPP_CHECK(session.program().has_value());
+    TPP_CHECK_EQ(
+        session.tokens().front().span.source.value,
+        std::size_t{0});
+
+    TPP_CHECK(!compiler.compile(
+        data_path("does-not-exist.tpp"),
+        session));
+    TPP_CHECK(session.tokens().empty());
+    TPP_CHECK(!session.program().has_value());
+    TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
 }
 
 }
@@ -129,5 +191,9 @@ int main()
          lexical_error_fails_but_recovers_to_eof},
         {"missing source fails without tokens",
          missing_source_fails_without_tokens},
+        {"syntax error stores recovered program",
+         syntax_error_fails_after_storing_the_recovered_program},
+        {"compilation session reuse resets results",
+         compilation_session_can_be_reused_without_stale_results},
     });
 }
