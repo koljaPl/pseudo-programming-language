@@ -19,6 +19,7 @@ configure_file(
 include(cmake/CompilerWarnings.cmake)
 
 add_library(tpp_compiler STATIC
+    src/ast/printer.cpp
     src/source/source_manager.cpp
     src/diagnostics/diagnostic_engine.cpp
     src/lexer/lexer.cpp
