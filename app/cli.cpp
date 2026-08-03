@@ -1,5 +1,6 @@
 #include "cli.hpp"
 
+#include "pseudo/ast/printer.hpp"
 #include "pseudo/config.hpp"
 #include "pseudo/diagnostics/diagnostic_engine.hpp"
 #include "pseudo/driver/compilation_session.hpp"
@@ -15,7 +16,8 @@ constexpr std::string_view help_text =
     "\n"
     "Options:\n"
     "  -h, --help     Show this help message\n"
-    "  -v, --version  Show version information\n";
+    "  -v, --version  Show version information\n"
+    "      --dump-ast Print the parsed AST\n";
 
 constexpr int success_exit_code = 0;
 constexpr int compilation_error_exit_code = 1;
@@ -55,6 +57,11 @@ ParseResult parse_args(std::span<const std::string_view> args) {
     Options options;
 
     for (const std::string_view argument : args) {
+        if (argument == "--dump-ast") {
+            options.dump_ast = true;
+            continue;
+        }
+
         if (argument.starts_with('-')) {
             return Error{"unknown option '" + std::string{argument} + "'"};
         }
@@ -64,6 +71,10 @@ ParseResult parse_args(std::span<const std::string_view> args) {
         }
 
         options.input = std::filesystem::path{std::string{argument}};
+    }
+
+    if (!options.input.has_value()) {
+        return Error{"no input file"};
     }
 
     return options;
@@ -102,7 +113,15 @@ int run(
         session.diagnostics().diagnostics(),
         session.sources());
 
-    return succeeded ? success_exit_code : compilation_error_exit_code;
+    if (!succeeded) {
+        return compilation_error_exit_code;
+    }
+
+    if (options.dump_ast) {
+        print_ast(out, session.program().value());
+    }
+
+    return success_exit_code;
 }
 
 }

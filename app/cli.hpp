@@ -19,6 +19,7 @@ enum class Action {
 struct Options {
     Action action = Action::compile;
     std::optional<std::filesystem::path> input;
+    bool dump_ast = false;
 };
 
 struct Error {
