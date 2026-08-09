@@ -26,6 +26,9 @@ add_library(tpp_compiler STATIC
     src/lexer/lexer.cpp
     src/parser/expression_parser.cpp
     src/parser/parser.cpp
+    src/semantic/type_context.cpp
+    src/semantic/ast_type.cpp
+    src/semantic/symbol_table.cpp
     src/driver/compiler.cpp
 )
 
