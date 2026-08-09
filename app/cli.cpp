@@ -1,11 +1,13 @@
 #include "cli.hpp"
 
 #include "pseudo/ast/printer.hpp"
+#include "pseudo/codegen/cpp_generator.hpp"
 #include "pseudo/config.hpp"
 #include "pseudo/diagnostics/diagnostic_engine.hpp"
 #include "pseudo/driver/compilation_session.hpp"
 #include "pseudo/driver/compiler.hpp"
 
+#include <optional>
 #include <string>
 
 namespace tpp::cli {
@@ -17,7 +19,8 @@ constexpr std::string_view help_text =
     "Options:\n"
     "  -h, --help     Show this help message\n"
     "  -v, --version  Show version information\n"
-    "      --dump-ast Print the parsed AST\n";
+    "      --dump-ast Print the parsed AST\n"
+    "      --emit-cpp Emit generated C++20 source\n";
 
 constexpr int success_exit_code = 0;
 constexpr int compilation_error_exit_code = 1;
@@ -58,7 +61,24 @@ ParseResult parse_args(std::span<const std::string_view> args) {
 
     for (const std::string_view argument : args) {
         if (argument == "--dump-ast") {
-            options.dump_ast = true;
+            if (options.output_mode == OutputMode::cpp) {
+                return Error{
+                    "options '--dump-ast' and '--emit-cpp' cannot be used "
+                    "together"};
+            }
+
+            options.output_mode = OutputMode::ast;
+            continue;
+        }
+
+        if (argument == "--emit-cpp") {
+            if (options.output_mode == OutputMode::ast) {
+                return Error{
+                    "options '--dump-ast' and '--emit-cpp' cannot be used "
+                    "together"};
+            }
+
+            options.output_mode = OutputMode::cpp;
             continue;
         }
 
@@ -106,7 +126,16 @@ int run(
 
     CompilationSession session;
     const Compiler compiler;
-    const bool succeeded = compiler.compile(options.input.value(), session);
+    bool succeeded = compiler.compile(options.input.value(), session);
+    std::optional<std::string> generated_cpp;
+
+    if (succeeded && options.output_mode == OutputMode::cpp) {
+        generated_cpp = generate_cpp(
+            session.program().value(),
+            session.diagnostics());
+        succeeded = generated_cpp.has_value()
+            && !session.diagnostics().has_errors();
+    }
 
     render_diagnostics(
         err,
@@ -117,8 +146,10 @@ int run(
         return compilation_error_exit_code;
     }
 
-    if (options.dump_ast) {
+    if (options.output_mode == OutputMode::ast) {
         print_ast(out, session.program().value());
+    } else if (options.output_mode == OutputMode::cpp) {
+        out << generated_cpp.value();
     }
 
     return success_exit_code;
