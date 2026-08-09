@@ -16,10 +16,16 @@ enum class Action {
     version,
 };
 
+enum class OutputMode {
+    none,
+    ast,
+    cpp,
+};
+
 struct Options {
     Action action = Action::compile;
     std::optional<std::filesystem::path> input;
-    bool dump_ast = false;
+    OutputMode output_mode = OutputMode::none;
 };
 
 struct Error {

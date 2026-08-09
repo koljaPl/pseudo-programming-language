@@ -50,6 +50,16 @@ tpp_add_test(
 )
 
 tpp_add_test(
+    type_context_tests
+    type_context_tests.cpp
+)
+
+tpp_add_test(
+    symbol_table_tests
+    symbol_table_tests.cpp
+)
+
+tpp_add_test(
     driver_tests
     driver_tests.cpp
 )
