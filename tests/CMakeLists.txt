@@ -45,6 +45,11 @@ tpp_add_test(
 )
 
 tpp_add_test(
+    cpp_codegen_tests
+    cpp_codegen_tests.cpp
+)
+
+tpp_add_test(
     driver_tests
     driver_tests.cpp
 )
@@ -66,7 +71,13 @@ target_compile_definitions(
 )
 
 function(tpp_add_cli_integration_test name)
-    cmake_parse_arguments(TEST "" "EXIT_CODE;STDOUT;STDERR" "ARGS" ${ARGN})
+    cmake_parse_arguments(
+        TEST
+        ""
+        "EXIT_CODE;STDOUT;STDERR;STDOUT_FILE;STDERR_FILE"
+        "ARGS"
+        ${ARGN}
+    )
 
     if(NOT DEFINED TEST_EXIT_CODE)
         message(FATAL_ERROR "${name}: EXIT_CODE is required")
@@ -97,6 +108,8 @@ function(tpp_add_cli_integration_test name)
             "-DEXPECTED_EXIT=${TEST_EXIT_CODE}"
             "-DEXPECTED_STDOUT=${TEST_STDOUT}"
             "-DEXPECTED_STDERR=${TEST_STDERR}"
+            "-DEXPECTED_STDOUT_FILE=${TEST_STDOUT_FILE}"
+            "-DEXPECTED_STDERR_FILE=${TEST_STDERR_FILE}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCliTest.cmake"
     )
 endfunction()
@@ -110,6 +123,7 @@ string(
     "  -h, --help     Show this help message\n"
     "  -v, --version  Show version information\n"
     "      --dump-ast Print the parsed AST\n"
+    "      --emit-cpp Emit generated C++20 source\n"
 )
 
 tpp_add_cli_integration_test(
@@ -189,6 +203,28 @@ tpp_add_cli_integration_test(
     ARGS "${valid_lexical_source}" --dump-ast
 )
 
+set(codegen_source
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_minimal.tpp"
+)
+set(codegen_expected
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_minimal.expected.cpp"
+)
+
+tpp_add_cli_integration_test(
+    emit_cpp
+    EXIT_CODE 0
+    STDOUT_FILE "${codegen_expected}"
+    ARGS --emit-cpp "${codegen_source}"
+)
+
+tpp_add_cli_integration_test(
+    conflicting_output_modes
+    EXIT_CODE 2
+    STDERR
+        "pseudo: error: options '--dump-ast' and '--emit-cpp' cannot be used together\n"
+    ARGS --dump-ast --emit-cpp "${codegen_source}"
+)
+
 set(invalid_lexical_source
     "${CMAKE_CURRENT_SOURCE_DIR}/data/invalid_lexical.tpp"
 )
@@ -213,6 +249,13 @@ tpp_add_cli_integration_test(
     EXIT_CODE 1
     STDERR "${invalid_lexical_diagnostic}"
     ARGS --dump-ast "${invalid_lexical_source}"
+)
+
+tpp_add_cli_integration_test(
+    suppress_emit_on_lexical_error
+    EXIT_CODE 1
+    STDERR "${invalid_lexical_diagnostic}"
+    ARGS --emit-cpp "${invalid_lexical_source}"
 )
 
 set(invalid_syntax_source
@@ -241,6 +284,32 @@ tpp_add_cli_integration_test(
     ARGS --dump-ast "${invalid_syntax_source}"
 )
 
+tpp_add_cli_integration_test(
+    suppress_emit_on_syntax_error
+    EXIT_CODE 1
+    STDERR "${invalid_syntax_diagnostic}"
+    ARGS --emit-cpp "${invalid_syntax_source}"
+)
+
+set(codegen_unsupported_source
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_unsupported.tpp"
+)
+set(codegen_unsupported_stderr
+    "${CMAKE_CURRENT_BINARY_DIR}/codegen_unsupported.expected.stderr"
+)
+configure_file(
+    data/codegen_unsupported.expected.stderr.in
+    "${codegen_unsupported_stderr}"
+    @ONLY
+)
+
+tpp_add_cli_integration_test(
+    suppress_emit_on_codegen_error
+    EXIT_CODE 1
+    STDERR_FILE "${codegen_unsupported_stderr}"
+    ARGS --emit-cpp "${codegen_unsupported_source}"
+)
+
 set(missing_source "${CMAKE_CURRENT_SOURCE_DIR}/data/does-not-exist.tpp")
 
 tpp_add_cli_integration_test(
@@ -249,3 +318,22 @@ tpp_add_cli_integration_test(
     STDERR "pseudo: error: cannot open '${missing_source}'\n"
     ARGS "${missing_source}"
 )
+
+find_program(TPP_GXX_EXECUTABLE NAMES g++)
+
+if(TPP_GXX_EXECUTABLE)
+    set(codegen_smoke_source
+        "${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_smoke.tpp"
+    )
+
+    add_test(
+        NAME codegen.smoke.gxx
+        COMMAND
+            "${CMAKE_COMMAND}"
+            "-DCLI=$<TARGET_FILE:pseudo>"
+            "-DINPUT=${codegen_smoke_source}"
+            "-DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/codegen-smoke.cpp"
+            "-DCXX=${TPP_GXX_EXECUTABLE}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCodegenSmoke.cmake"
+    )
+endif()

@@ -15,6 +15,19 @@
 
 namespace {
 
+constexpr std::string_view generated_cpp =
+    "#include <cstdint>\n"
+    "#include <iostream>\n"
+    "#include <string>\n"
+    "\n"
+    "int main()\n"
+    "{\n"
+    "    std::cout << std::boolalpha << std::string{\"Hello\", 5} "
+    "<< '\\n';\n"
+    "    std::cout << std::boolalpha << std::int64_t{42} << '\\n';\n"
+    "    return static_cast<int>(std::int64_t{0});\n"
+    "}\n";
+
 struct Result {
     int exit_code;
     std::string stdout_text;
@@ -57,7 +70,8 @@ void help_is_printed_to_stdout()
             "Options:\n"
             "  -h, --help     Show this help message\n"
             "  -v, --version  Show version information\n"
-            "      --dump-ast Print the parsed AST\n"));
+            "      --dump-ast Print the parsed AST\n"
+            "      --emit-cpp Emit generated C++20 source\n"));
     TPP_CHECK(result.stderr_text.empty());
 }
 
@@ -176,6 +190,122 @@ void dump_ast_is_suppressed_for_lexical_and_syntax_errors()
               "    |         ^\n");
 }
 
+void emit_cpp_requires_an_input_file()
+{
+    const auto result = invoke({"--emit-cpp"});
+
+    TPP_CHECK_EQ(result.exit_code, 2);
+    TPP_CHECK(result.stdout_text.empty());
+    TPP_CHECK_EQ(
+        result.stderr_text,
+        std::string{"pseudo: error: no input file\n"});
+}
+
+void emit_cpp_accepts_the_flag_before_after_and_repeated()
+{
+    const auto input =
+        std::filesystem::path(TPP_TEST_DATA_DIR) / "codegen_minimal.tpp";
+    const auto input_text = input.string();
+
+    const auto before = invoke({"--emit-cpp", input_text});
+    TPP_CHECK_EQ(before.exit_code, 0);
+    TPP_CHECK_EQ(before.stdout_text, generated_cpp);
+    TPP_CHECK(before.stderr_text.empty());
+
+    const auto after = invoke({input_text, "--emit-cpp"});
+    TPP_CHECK_EQ(after.exit_code, 0);
+    TPP_CHECK_EQ(after.stdout_text, generated_cpp);
+    TPP_CHECK(after.stderr_text.empty());
+
+    const auto repeated =
+        invoke({"--emit-cpp", input_text, "--emit-cpp"});
+    TPP_CHECK_EQ(repeated.exit_code, 0);
+    TPP_CHECK_EQ(repeated.stdout_text, generated_cpp);
+    TPP_CHECK(repeated.stderr_text.empty());
+}
+
+void output_modes_are_mutually_exclusive()
+{
+    const auto input =
+        std::filesystem::path(TPP_TEST_DATA_DIR) / "codegen_minimal.tpp";
+    constexpr std::string_view expected =
+        "pseudo: error: options '--dump-ast' and '--emit-cpp' cannot be used "
+        "together\n";
+
+    const auto ast_first =
+        invoke({"--dump-ast", "--emit-cpp", input.string()});
+    TPP_CHECK_EQ(ast_first.exit_code, 2);
+    TPP_CHECK(ast_first.stdout_text.empty());
+    TPP_CHECK_EQ(ast_first.stderr_text, expected);
+
+    const auto cpp_first =
+        invoke({"--emit-cpp", input.string(), "--dump-ast"});
+    TPP_CHECK_EQ(cpp_first.exit_code, 2);
+    TPP_CHECK(cpp_first.stdout_text.empty());
+    TPP_CHECK_EQ(cpp_first.stderr_text, expected);
+}
+
+void emit_cpp_is_suppressed_for_frontend_errors()
+{
+    const auto lexical =
+        std::filesystem::path(TPP_TEST_DATA_DIR) / "invalid_lexical.tpp";
+    const auto lexical_result = invoke({"--emit-cpp", lexical.string()});
+    TPP_CHECK_EQ(lexical_result.exit_code, 1);
+    TPP_CHECK(lexical_result.stdout_text.empty());
+    TPP_CHECK_EQ(
+        lexical_result.stderr_text,
+        lexical.string()
+            + ":1:1: error: unknown character '@'\n"
+              "  1 | @\n"
+              "    | ^\n");
+
+    const auto syntax =
+        std::filesystem::path(TPP_TEST_DATA_DIR) / "invalid_syntax.tpp";
+    const auto syntax_result = invoke({syntax.string(), "--emit-cpp"});
+    TPP_CHECK_EQ(syntax_result.exit_code, 1);
+    TPP_CHECK(syntax_result.stdout_text.empty());
+    TPP_CHECK_EQ(
+        syntax_result.stderr_text,
+        syntax.string()
+            + ":1:9: error: expected expression\n"
+              "  1 | int x = }\n"
+              "    |         ^\n");
+}
+
+void emit_cpp_is_suppressed_for_codegen_errors()
+{
+    const auto input =
+        std::filesystem::path(TPP_TEST_DATA_DIR) / "codegen_unsupported.tpp";
+    const auto result = invoke({"--emit-cpp", input.string()});
+
+    TPP_CHECK_EQ(result.exit_code, 1);
+    TPP_CHECK(result.stdout_text.empty());
+    TPP_CHECK_EQ(
+        result.stderr_text,
+        input.string()
+            + ":1:14: error: C++ code generation does not support local "
+              "variables yet\n"
+              "  1 | int main() { int value = 0; }\n"
+              "    |              ^~~~~~~~~~~~~~\n");
+}
+
+void emit_cpp_rejects_a_frontend_valid_empty_program()
+{
+    const auto input =
+        std::filesystem::path(TPP_TEST_DATA_DIR) / "empty.tpp";
+    const auto result = invoke({"--emit-cpp", input.string()});
+
+    TPP_CHECK_EQ(result.exit_code, 1);
+    TPP_CHECK(result.stdout_text.empty());
+    TPP_CHECK_EQ(
+        result.stderr_text,
+        input.string()
+            + ":1:1: error: C++ code generation requires a top-level 'int "
+              "main()' function\n"
+              "  1 | \n"
+              "    | ^\n");
+}
+
 void missing_file_is_a_compilation_error()
 {
     const auto input = std::filesystem::path(TPP_TEST_DATA_DIR) / "missing.tpp";
@@ -207,6 +337,17 @@ int main()
         {"dump AST valid program", dump_ast_prints_a_complete_valid_program},
         {"dump AST suppresses erroneous programs",
          dump_ast_is_suppressed_for_lexical_and_syntax_errors},
+        {"emit C++ requires input", emit_cpp_requires_an_input_file},
+        {"emit C++ option order and repetition",
+         emit_cpp_accepts_the_flag_before_after_and_repeated},
+        {"output modes are mutually exclusive",
+         output_modes_are_mutually_exclusive},
+        {"emit C++ suppresses frontend errors",
+         emit_cpp_is_suppressed_for_frontend_errors},
+        {"emit C++ suppresses codegen errors",
+         emit_cpp_is_suppressed_for_codegen_errors},
+        {"emit C++ rejects empty program",
+         emit_cpp_rejects_a_frontend_valid_empty_program},
         {"missing file is a compilation error", missing_file_is_a_compilation_error},
     });
 }
