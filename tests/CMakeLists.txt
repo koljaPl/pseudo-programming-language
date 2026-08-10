@@ -60,6 +60,11 @@ tpp_add_test(
 )
 
 tpp_add_test(
+    declaration_collector_tests
+    declaration_collector_tests.cpp
+)
+
+tpp_add_test(
     driver_tests
     driver_tests.cpp
 )
@@ -299,6 +304,39 @@ tpp_add_cli_integration_test(
     EXIT_CODE 1
     STDERR "${invalid_syntax_diagnostic}"
     ARGS --emit-cpp "${invalid_syntax_source}"
+)
+
+set(duplicate_declaration_source
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/duplicate_declaration.tpp"
+)
+set(duplicate_declaration_stderr
+    "${CMAKE_CURRENT_BINARY_DIR}/duplicate_declaration.expected.stderr"
+)
+configure_file(
+    data/duplicate_declaration.expected.stderr.in
+    "${duplicate_declaration_stderr}"
+    @ONLY
+)
+
+tpp_add_cli_integration_test(
+    duplicate_declaration
+    EXIT_CODE 1
+    STDERR_FILE "${duplicate_declaration_stderr}"
+    ARGS "${duplicate_declaration_source}"
+)
+
+tpp_add_cli_integration_test(
+    suppress_dump_on_declaration_error
+    EXIT_CODE 1
+    STDERR_FILE "${duplicate_declaration_stderr}"
+    ARGS --dump-ast "${duplicate_declaration_source}"
+)
+
+tpp_add_cli_integration_test(
+    suppress_emit_on_declaration_error
+    EXIT_CODE 1
+    STDERR_FILE "${duplicate_declaration_stderr}"
+    ARGS --emit-cpp "${duplicate_declaration_source}"
 )
 
 set(codegen_unsupported_source

@@ -1,0 +1,6 @@
+@duplicate_declaration_source@:3:9: error: duplicate declaration of 'value'
+  3 |     int value;
+    |         ^~~~~
+@duplicate_declaration_source@:2:9: note: previous declaration is here
+  2 |     int value;
+    |         ^~~~~
