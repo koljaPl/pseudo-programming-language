@@ -46,6 +46,7 @@ void check_fresh_semantic_state(const tpp::CompilationSession& session)
     TPP_CHECK_EQ(session.symbols().scope_count(), std::size_t{1});
     TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{0});
     TPP_CHECK_EQ(session.symbols().global_scope(), tpp::ScopeId{0});
+    TPP_CHECK(session.declarations().empty());
 }
 
 void empty_source_produces_only_eof()
@@ -68,6 +69,7 @@ void empty_source_produces_only_eof()
     TPP_CHECK(session.program().has_value());
     TPP_CHECK(session.program()->declarations.empty());
     TPP_CHECK(session.program()->span.empty());
+    check_fresh_semantic_state(session);
 }
 
 void valid_source_produces_tokens_without_diagnostics()
@@ -107,6 +109,27 @@ void valid_source_produces_tokens_without_diagnostics()
     TPP_CHECK(function != nullptr);
     TPP_CHECK_EQ(function->name, std::string{"main"});
     TPP_CHECK(function->body != nullptr);
+
+    const auto symbol = session.declarations().symbol_for(*function);
+    const auto function_scope = session.declarations().scope_for(*function->body);
+    TPP_CHECK(symbol.has_value());
+    TPP_CHECK(function_scope.has_value());
+    TPP_CHECK_EQ(
+        session.symbols().lookup_local(
+            session.symbols().global_scope(),
+            "main"),
+        symbol);
+    TPP_CHECK_EQ(
+        session.symbols().scope(*function_scope).parent(),
+        std::optional<tpp::ScopeId>{session.symbols().global_scope()});
+
+    const auto* function_symbol = std::get_if<tpp::FunctionSymbol>(
+        &session.symbols().symbol(*symbol).data);
+    TPP_CHECK(function_symbol != nullptr);
+    TPP_CHECK_EQ(
+        function_symbol->return_type,
+        session.types().integer_type());
+    TPP_CHECK(function_symbol->parameter_types.empty());
 }
 
 void lexical_error_fails_but_recovers_to_eof()
@@ -138,6 +161,7 @@ void lexical_error_fails_but_recovers_to_eof()
     TPP_CHECK_EQ(
         session.sources().display_name(span.source),
         std::string_view{input_text});
+    check_fresh_semantic_state(session);
 }
 
 void missing_source_fails_without_tokens()
@@ -160,6 +184,7 @@ void missing_source_fails_without_tokens()
         std::string{"cannot open '"} + input.string() + '\'');
     TPP_CHECK(!diagnostics.front().primary_span.has_value());
     TPP_CHECK(!session.program().has_value());
+    check_fresh_semantic_state(session);
 }
 
 void syntax_error_fails_after_storing_the_recovered_program()
@@ -177,6 +202,7 @@ void syntax_error_fails_after_storing_the_recovered_program()
     TPP_CHECK_EQ(
         session.diagnostics().diagnostics().front().message,
         std::string{"expected expression"});
+    check_fresh_semantic_state(session);
 }
 
 void compilation_session_can_be_reused_without_stale_results()
@@ -190,6 +216,14 @@ void compilation_session_can_be_reused_without_stale_results()
     TPP_CHECK(session.diagnostics().has_errors());
     TPP_CHECK(!session.program().has_value());
 
+    TPP_CHECK(!compiler.compile(
+        data_path("duplicate_declaration.tpp"),
+        session));
+    TPP_CHECK(session.program().has_value());
+    TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
+    TPP_CHECK(!session.declarations().empty());
+    TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{2});
+
     TPP_CHECK(compiler.compile(
         data_path("valid_lexical.tpp"),
         session));
@@ -199,6 +233,9 @@ void compilation_session_can_be_reused_without_stale_results()
     TPP_CHECK_EQ(
         session.tokens().front().span.source.value,
         std::size_t{0});
+    TPP_CHECK(!session.declarations().empty());
+    TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{1});
+    TPP_CHECK_EQ(session.symbols().scope_count(), std::size_t{2});
 
     TPP_CHECK(!compiler.compile(
         data_path("does-not-exist.tpp"),
@@ -206,11 +243,16 @@ void compilation_session_can_be_reused_without_stale_results()
     TPP_CHECK(session.tokens().empty());
     TPP_CHECK(!session.program().has_value());
     TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
+    check_fresh_semantic_state(session);
 }
 
 void compilation_session_reset_clears_semantic_state()
 {
     tpp::CompilationSession session;
+    const tpp::Compiler compiler;
+    TPP_CHECK(compiler.compile(data_path("valid_lexical.tpp"), session));
+    TPP_CHECK(!session.declarations().empty());
+
     const auto integer_type = session.types().integer_type();
     const auto vector_type = session.types().vector_type(integer_type);
     TPP_CHECK(vector_type.has_value());
@@ -228,8 +270,8 @@ void compilation_session_reset_clears_semantic_state()
     TPP_CHECK(std::holds_alternative<tpp::SymbolId>(insertion));
     const auto symbol = std::get<tpp::SymbolId>(insertion);
     TPP_CHECK_EQ(session.types().type_count(), std::size_t{6});
-    TPP_CHECK_EQ(session.symbols().scope_count(), std::size_t{2});
-    TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{1});
+    TPP_CHECK_EQ(session.symbols().scope_count(), std::size_t{3});
+    TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{2});
 
     session.reset();
 
@@ -249,7 +291,7 @@ void compilation_session_reset_clears_semantic_state()
     });
 }
 
-void compiler_resets_but_does_not_populate_semantic_state()
+void compiler_populates_semantic_state_after_reset()
 {
     tpp::CompilationSession session;
     const tpp::Compiler compiler;
@@ -267,12 +309,87 @@ void compiler_resets_but_does_not_populate_semantic_state()
 
     TPP_CHECK(compiler.compile(data_path("valid_lexical.tpp"), session));
 
-    check_fresh_semantic_state(session);
     TPP_CHECK(session.program().has_value());
     TPP_CHECK_EQ(session.program()->declarations.size(), std::size_t{1});
+    TPP_CHECK_EQ(session.types().type_count(), std::size_t{5});
+    TPP_CHECK_EQ(session.symbols().scope_count(), std::size_t{2});
+    TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{1});
+    TPP_CHECK(!session.declarations().empty());
     TPP_CHECK(!session.symbols()
-                   .lookup_local(session.symbols().global_scope(), "main")
+                   .lookup_local(session.symbols().global_scope(), "stale")
                    .has_value());
+
+    const auto& function = std::get<tpp::FunctionDeclaration>(
+        session.program()->declarations.front());
+    const auto main_symbol = session.declarations().symbol_for(function);
+    const auto function_scope = session.declarations().scope_for(*function.body);
+    TPP_CHECK(main_symbol.has_value());
+    TPP_CHECK(function_scope.has_value());
+    TPP_CHECK_EQ(
+        session.symbols().lookup_local(
+            session.symbols().global_scope(),
+            "main"),
+        main_symbol);
+    TPP_CHECK_EQ(
+        session.symbols().scope(*function_scope).parent(),
+        std::optional<tpp::ScopeId>{session.symbols().global_scope()});
+}
+
+void declaration_errors_fail_after_collecting_independent_state()
+{
+    tpp::CompilationSession session;
+    const tpp::Compiler compiler;
+
+    const bool succeeded = compiler.compile(
+        data_path("duplicate_declaration.tpp"),
+        session);
+
+    TPP_CHECK(!succeeded);
+    TPP_CHECK(session.program().has_value());
+    TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
+    TPP_CHECK_EQ(session.diagnostics().diagnostics().size(), std::size_t{2});
+    TPP_CHECK_EQ(session.symbols().scope_count(), std::size_t{2});
+    TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{2});
+    TPP_CHECK(!session.declarations().empty());
+
+    const auto diagnostics = session.diagnostics().diagnostics();
+    TPP_CHECK_EQ(
+        diagnostics[0].severity,
+        tpp::DiagnosticSeverity::error);
+    TPP_CHECK_EQ(
+        diagnostics[0].message,
+        std::string{"duplicate declaration of 'value'"});
+    TPP_CHECK(diagnostics[0].primary_span.has_value());
+    TPP_CHECK_EQ(diagnostics[0].primary_span->begin, std::size_t{36});
+    TPP_CHECK_EQ(diagnostics[0].primary_span->end, std::size_t{41});
+    TPP_CHECK_EQ(
+        diagnostics[1].severity,
+        tpp::DiagnosticSeverity::note);
+    TPP_CHECK_EQ(
+        diagnostics[1].message,
+        std::string{"previous declaration is here"});
+    TPP_CHECK(diagnostics[1].primary_span.has_value());
+    TPP_CHECK_EQ(diagnostics[1].primary_span->begin, std::size_t{21});
+    TPP_CHECK_EQ(diagnostics[1].primary_span->end, std::size_t{26});
+
+    const auto& function = std::get<tpp::FunctionDeclaration>(
+        session.program()->declarations.front());
+    TPP_CHECK(function.body != nullptr);
+    TPP_CHECK_EQ(function.body->items.size(), std::size_t{2});
+
+    const auto& first_statement =
+        std::get<tpp::Statement>(function.body->items[0]);
+    const auto& duplicate_statement =
+        std::get<tpp::Statement>(function.body->items[1]);
+    const auto& first =
+        std::get<tpp::VariableDeclaration>(first_statement.node);
+    const auto& duplicate =
+        std::get<tpp::VariableDeclaration>(duplicate_statement.node);
+
+    TPP_CHECK(session.declarations().symbol_for(function).has_value());
+    TPP_CHECK(session.declarations().scope_for(*function.body).has_value());
+    TPP_CHECK(session.declarations().symbol_for(first).has_value());
+    TPP_CHECK(!session.declarations().symbol_for(duplicate).has_value());
 }
 
 }
@@ -293,7 +410,9 @@ int main()
          compilation_session_can_be_reused_without_stale_results},
         {"compilation session reset clears semantic state",
          compilation_session_reset_clears_semantic_state},
-        {"compiler does not populate semantic state",
-         compiler_resets_but_does_not_populate_semantic_state},
+        {"compiler populates semantic state after reset",
+         compiler_populates_semantic_state_after_reset},
+        {"declaration errors retain collected state",
+         declaration_errors_fail_after_collecting_independent_state},
     });
 }
