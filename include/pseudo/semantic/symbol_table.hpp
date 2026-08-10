@@ -31,7 +31,10 @@ struct ScopeId {
 };
 
 struct VariableSymbol {
-    TypeId type;
+    // A for-each binding has no known type until type checking examines its
+    // iterable. Every explicitly typed variable and for-range binding stores
+    // a concrete TypeId.
+    std::optional<TypeId> type;
 };
 
 struct ParameterSymbol {

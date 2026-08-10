@@ -3,6 +3,7 @@
 #include "pseudo/semantic/symbol_table.hpp"
 
 #include <cstddef>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -40,7 +41,7 @@ Symbol variable_symbol(
     return Symbol{
         .name = std::move(name),
         .declaration_span = span,
-        .data = VariableSymbol{type},
+        .data = VariableSymbol{.type = type},
     };
 }
 
@@ -114,10 +115,28 @@ void symbols_own_names_kinds_and_spans()
     const auto& variable = symbols.symbol(variable_id);
     const auto* variable_data = std::get_if<VariableSymbol>(&variable.data);
     TPP_CHECK(variable_data != nullptr);
-    TPP_CHECK_EQ(variable_data->type, TypeId{4});
+    TPP_CHECK(variable_data->type.has_value());
+    TPP_CHECK_EQ(*variable_data->type, TypeId{4});
     TPP_CHECK_EQ(variable.declaration_span.source.value, std::size_t{8});
     TPP_CHECK_EQ(variable.declaration_span.begin, std::size_t{13});
     TPP_CHECK_EQ(variable.declaration_span.end, std::size_t{18});
+}
+
+void variable_symbols_can_defer_their_type()
+{
+    SymbolTable symbols;
+    const auto id = require_inserted(symbols.insert(
+        symbols.global_scope(),
+        Symbol{
+            .name = "item",
+            .declaration_span = declaration_span(2, 4, 8),
+            .data = VariableSymbol{.type = std::nullopt},
+        }));
+
+    const auto* variable =
+        std::get_if<VariableSymbol>(&symbols.symbol(id).data);
+    TPP_CHECK(variable != nullptr);
+    TPP_CHECK(!variable->type.has_value());
 }
 
 void function_signatures_preserve_parameter_order()
@@ -273,7 +292,8 @@ void duplicate_names_share_one_namespace_and_do_not_consume_ids()
     const auto* variable =
         std::get_if<VariableSymbol>(&symbols.symbol(original).data);
     TPP_CHECK(variable != nullptr);
-    TPP_CHECK_EQ(variable->type, TypeId{0});
+    TPP_CHECK(variable->type.has_value());
+    TPP_CHECK_EQ(*variable->type, TypeId{0});
     TPP_CHECK_EQ(symbols.symbol(original).declaration_span.begin, std::size_t{1});
 
     const auto next = require_inserted(symbols.insert(
@@ -353,6 +373,8 @@ int main()
     return tpp::test::run({
         {"table starts with one global scope", table_starts_with_one_global_scope},
         {"symbols own names, kinds, and spans", symbols_own_names_kinds_and_spans},
+        {"variable symbols can defer their type",
+         variable_symbols_can_defer_their_type},
         {"function signatures preserve parameter order",
          function_signatures_preserve_parameter_order},
         {"symbol IDs remain stable as the table grows",
