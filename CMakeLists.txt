@@ -29,6 +29,8 @@ add_library(tpp_compiler STATIC
     src/semantic/type_context.cpp
     src/semantic/ast_type.cpp
     src/semantic/symbol_table.cpp
+    src/semantic/declaration_info.cpp
+    src/semantic/declaration_collector.cpp
     src/driver/compiler.cpp
 )
 
