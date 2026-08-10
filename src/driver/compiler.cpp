@@ -3,6 +3,7 @@
 #include "pseudo/driver/compilation_session.hpp"
 #include "pseudo/lexer/lexer.hpp"
 #include "pseudo/parser/parser.hpp"
+#include "pseudo/semantic/declaration_collector.hpp"
 
 #include <variant>
 
@@ -34,7 +35,16 @@ bool Compiler::compile(
         session.diagnostics()};
     session.program().emplace(parser.parse_program());
 
-    return !session.diagnostics().has_errors();
+    if (session.diagnostics().has_errors()) {
+        return false;
+    }
+
+    DeclarationCollector collector{
+        session.types(),
+        session.symbols(),
+        session.declarations(),
+        session.diagnostics()};
+    return collector.collect(*session.program());
 }
 
 }

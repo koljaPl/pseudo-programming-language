@@ -3,6 +3,7 @@
 #include "pseudo/ast/program.hpp"
 #include "pseudo/diagnostics/diagnostic_engine.hpp"
 #include "pseudo/lexer/token.hpp"
+#include "pseudo/semantic/declaration_info.hpp"
 #include "pseudo/semantic/symbol_table.hpp"
 #include "pseudo/semantic/type_context.hpp"
 #include "pseudo/source/source_manager.hpp"
@@ -15,12 +16,13 @@ namespace tpp {
 class CompilationSession {
 public:
     void reset() {
-        sources_ = SourceManager{};
-        diagnostics_ = DiagnosticEngine{};
+        declarations_ = DeclarationInfo{};
+        program_.reset();
+        tokens_.clear();
         symbols_ = SymbolTable{};
         types_ = TypeContext{};
-        tokens_.clear();
-        program_.reset();
+        diagnostics_ = DiagnosticEngine{};
+        sources_ = SourceManager{};
     }
 
     [[nodiscard]] SourceManager& sources() noexcept {
@@ -55,6 +57,14 @@ public:
         return symbols_;
     }
 
+    [[nodiscard]] DeclarationInfo& declarations() noexcept {
+        return declarations_;
+    }
+
+    [[nodiscard]] const DeclarationInfo& declarations() const noexcept {
+        return declarations_;
+    }
+
     [[nodiscard]] std::vector<Token>& tokens() noexcept {
         return tokens_;
     }
@@ -78,6 +88,7 @@ private:
     SymbolTable symbols_;
     std::vector<Token> tokens_;
     std::optional<Program> program_;
+    DeclarationInfo declarations_;
 };
 
 }
