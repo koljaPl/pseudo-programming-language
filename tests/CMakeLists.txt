@@ -65,6 +65,11 @@ tpp_add_test(
 )
 
 tpp_add_test(
+    name_resolver_tests
+    name_resolver_tests.cpp
+)
+
+tpp_add_test(
     driver_tests
     driver_tests.cpp
 )
@@ -337,6 +342,39 @@ tpp_add_cli_integration_test(
     EXIT_CODE 1
     STDERR_FILE "${duplicate_declaration_stderr}"
     ARGS --emit-cpp "${duplicate_declaration_source}"
+)
+
+set(unknown_name_source
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/unknown_name.tpp"
+)
+set(unknown_name_stderr
+    "${CMAKE_CURRENT_BINARY_DIR}/unknown_name.expected.stderr"
+)
+configure_file(
+    data/unknown_name.expected.stderr.in
+    "${unknown_name_stderr}"
+    @ONLY
+)
+
+tpp_add_cli_integration_test(
+    unknown_name
+    EXIT_CODE 1
+    STDERR_FILE "${unknown_name_stderr}"
+    ARGS "${unknown_name_source}"
+)
+
+tpp_add_cli_integration_test(
+    suppress_dump_on_name_resolution_error
+    EXIT_CODE 1
+    STDERR_FILE "${unknown_name_stderr}"
+    ARGS --dump-ast "${unknown_name_source}"
+)
+
+tpp_add_cli_integration_test(
+    suppress_emit_on_name_resolution_error
+    EXIT_CODE 1
+    STDERR_FILE "${unknown_name_stderr}"
+    ARGS --emit-cpp "${unknown_name_source}"
 )
 
 set(codegen_unsupported_source

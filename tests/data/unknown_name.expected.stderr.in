@@ -1,0 +1,3 @@
+@unknown_name_source@:2:11: error: unknown name 'missing'
+  2 |     print(missing);
+    |           ^~~~~~~

@@ -220,6 +220,32 @@ void declaration_errors_suppress_all_output_modes()
     TPP_CHECK_EQ(cpp.stderr_text, expected_error);
 }
 
+void name_resolution_errors_suppress_all_output_modes()
+{
+    const auto input =
+        std::filesystem::path(TPP_TEST_DATA_DIR) / "unknown_name.tpp";
+    const auto expected_error =
+        input.string()
+        + ":2:11: error: unknown name 'missing'\n"
+          "  2 |     print(missing);\n"
+          "    |           ^~~~~~~\n";
+
+    const auto normal = invoke({input.string()});
+    TPP_CHECK_EQ(normal.exit_code, 1);
+    TPP_CHECK(normal.stdout_text.empty());
+    TPP_CHECK_EQ(normal.stderr_text, expected_error);
+
+    const auto ast = invoke({"--dump-ast", input.string()});
+    TPP_CHECK_EQ(ast.exit_code, 1);
+    TPP_CHECK(ast.stdout_text.empty());
+    TPP_CHECK_EQ(ast.stderr_text, expected_error);
+
+    const auto cpp = invoke({input.string(), "--emit-cpp"});
+    TPP_CHECK_EQ(cpp.exit_code, 1);
+    TPP_CHECK(cpp.stdout_text.empty());
+    TPP_CHECK_EQ(cpp.stderr_text, expected_error);
+}
+
 void emit_cpp_requires_an_input_file()
 {
     const auto result = invoke({"--emit-cpp"});
@@ -369,6 +395,8 @@ int main()
          dump_ast_is_suppressed_for_lexical_and_syntax_errors},
         {"declaration errors suppress all output modes",
          declaration_errors_suppress_all_output_modes},
+        {"name resolution errors suppress all output modes",
+         name_resolution_errors_suppress_all_output_modes},
         {"emit C++ requires input", emit_cpp_requires_an_input_file},
         {"emit C++ option order and repetition",
          emit_cpp_accepts_the_flag_before_after_and_repeated},
