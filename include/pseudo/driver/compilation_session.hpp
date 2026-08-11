@@ -4,6 +4,7 @@
 #include "pseudo/diagnostics/diagnostic_engine.hpp"
 #include "pseudo/lexer/token.hpp"
 #include "pseudo/semantic/declaration_info.hpp"
+#include "pseudo/semantic/resolution_info.hpp"
 #include "pseudo/semantic/symbol_table.hpp"
 #include "pseudo/semantic/type_context.hpp"
 #include "pseudo/source/source_manager.hpp"
@@ -16,6 +17,7 @@ namespace tpp {
 class CompilationSession {
 public:
     void reset() {
+        resolutions_ = ResolutionInfo{};
         declarations_ = DeclarationInfo{};
         program_.reset();
         tokens_.clear();
@@ -65,6 +67,14 @@ public:
         return declarations_;
     }
 
+    [[nodiscard]] ResolutionInfo& resolutions() noexcept {
+        return resolutions_;
+    }
+
+    [[nodiscard]] const ResolutionInfo& resolutions() const noexcept {
+        return resolutions_;
+    }
+
     [[nodiscard]] std::vector<Token>& tokens() noexcept {
         return tokens_;
     }
@@ -89,6 +99,7 @@ private:
     std::vector<Token> tokens_;
     std::optional<Program> program_;
     DeclarationInfo declarations_;
+    ResolutionInfo resolutions_;
 };
 
 }

@@ -4,6 +4,7 @@
 #include "pseudo/lexer/lexer.hpp"
 #include "pseudo/parser/parser.hpp"
 #include "pseudo/semantic/declaration_collector.hpp"
+#include "pseudo/semantic/name_resolver.hpp"
 
 #include <variant>
 
@@ -44,7 +45,16 @@ bool Compiler::compile(
         session.symbols(),
         session.declarations(),
         session.diagnostics()};
-    return collector.collect(*session.program());
+    if (!collector.collect(*session.program())) {
+        return false;
+    }
+
+    NameResolver resolver{
+        session.symbols(),
+        session.declarations(),
+        session.resolutions(),
+        session.diagnostics()};
+    return resolver.resolve(*session.program());
 }
 
 }
