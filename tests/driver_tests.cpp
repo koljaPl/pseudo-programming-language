@@ -4,6 +4,7 @@
 #include "pseudo/driver/compilation_session.hpp"
 #include "pseudo/driver/compiler.hpp"
 #include "pseudo/lexer/token.hpp"
+#include "pseudo/semantic/builtin.hpp"
 
 #include <filesystem>
 #include <stdexcept>
@@ -47,6 +48,17 @@ void check_fresh_semantic_state(const tpp::CompilationSession& session)
     TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{0});
     TPP_CHECK_EQ(session.symbols().global_scope(), tpp::ScopeId{0});
     TPP_CHECK(session.declarations().empty());
+    TPP_CHECK(session.resolutions().empty());
+}
+
+void check_resolution(
+    const tpp::ResolutionInfo& resolutions,
+    const tpp::IdentifierExpression& reference,
+    const tpp::ResolutionTarget expected)
+{
+    const auto actual = resolutions.resolution_for(reference);
+    TPP_CHECK(actual.has_value());
+    TPP_CHECK_EQ(*actual, expected);
 }
 
 void empty_source_produces_only_eof()
@@ -222,7 +234,17 @@ void compilation_session_can_be_reused_without_stale_results()
     TPP_CHECK(session.program().has_value());
     TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
     TPP_CHECK(!session.declarations().empty());
+    TPP_CHECK(session.resolutions().empty());
     TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{2});
+
+    TPP_CHECK(!compiler.compile(
+        data_path("unknown_name.tpp"),
+        session));
+    TPP_CHECK(session.program().has_value());
+    TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
+    TPP_CHECK(!session.declarations().empty());
+    TPP_CHECK(!session.resolutions().empty());
+    TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{1});
 
     TPP_CHECK(compiler.compile(
         data_path("valid_lexical.tpp"),
@@ -234,6 +256,7 @@ void compilation_session_can_be_reused_without_stale_results()
         session.tokens().front().span.source.value,
         std::size_t{0});
     TPP_CHECK(!session.declarations().empty());
+    TPP_CHECK(session.resolutions().empty());
     TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{1});
     TPP_CHECK_EQ(session.symbols().scope_count(), std::size_t{2});
 
@@ -250,8 +273,9 @@ void compilation_session_reset_clears_semantic_state()
 {
     tpp::CompilationSession session;
     const tpp::Compiler compiler;
-    TPP_CHECK(compiler.compile(data_path("valid_lexical.tpp"), session));
+    TPP_CHECK(compiler.compile(data_path("codegen_minimal.tpp"), session));
     TPP_CHECK(!session.declarations().empty());
+    TPP_CHECK(!session.resolutions().empty());
 
     const auto integer_type = session.types().integer_type();
     const auto vector_type = session.types().vector_type(integer_type);
@@ -315,6 +339,7 @@ void compiler_populates_semantic_state_after_reset()
     TPP_CHECK_EQ(session.symbols().scope_count(), std::size_t{2});
     TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{1});
     TPP_CHECK(!session.declarations().empty());
+    TPP_CHECK(session.resolutions().empty());
     TPP_CHECK(!session.symbols()
                    .lookup_local(session.symbols().global_scope(), "stale")
                    .has_value());
@@ -351,6 +376,7 @@ void declaration_errors_fail_after_collecting_independent_state()
     TPP_CHECK_EQ(session.symbols().scope_count(), std::size_t{2});
     TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{2});
     TPP_CHECK(!session.declarations().empty());
+    TPP_CHECK(session.resolutions().empty());
 
     const auto diagnostics = session.diagnostics().diagnostics();
     TPP_CHECK_EQ(
@@ -392,6 +418,169 @@ void declaration_errors_fail_after_collecting_independent_state()
     TPP_CHECK(!session.declarations().symbol_for(duplicate).has_value());
 }
 
+void compiler_resolves_user_names_and_builtins()
+{
+    tpp::CompilationSession session;
+    const tpp::Compiler compiler;
+
+    TPP_CHECK(compiler.compile(
+        data_path("name_resolution_valid.tpp"),
+        session));
+    TPP_CHECK(!session.diagnostics().has_errors());
+    TPP_CHECK(session.program().has_value());
+    TPP_CHECK(!session.resolutions().empty());
+
+    const auto& declarations = session.program()->declarations;
+    TPP_CHECK_EQ(declarations.size(), std::size_t{3});
+
+    const auto& global = std::get<tpp::VariableDeclaration>(declarations[0]);
+    const auto& identity = std::get<tpp::FunctionDeclaration>(declarations[1]);
+    const auto& main = std::get<tpp::FunctionDeclaration>(declarations[2]);
+    TPP_CHECK(identity.body != nullptr);
+    TPP_CHECK(main.body != nullptr);
+    TPP_CHECK_EQ(identity.parameters.size(), std::size_t{1});
+    TPP_CHECK_EQ(identity.body->items.size(), std::size_t{1});
+    TPP_CHECK_EQ(main.body->items.size(), std::size_t{4});
+
+    const auto global_symbol = session.declarations().symbol_for(global);
+    const auto identity_symbol = session.declarations().symbol_for(identity);
+    const auto parameter_symbol =
+        session.declarations().symbol_for(identity.parameters.front());
+    TPP_CHECK(global_symbol.has_value());
+    TPP_CHECK(identity_symbol.has_value());
+    TPP_CHECK(parameter_symbol.has_value());
+
+    const auto& identity_return_statement = std::get<tpp::Statement>(
+        identity.body->items.front());
+    const auto& identity_return = std::get<tpp::ReturnStatement>(
+        identity_return_statement.node);
+    TPP_CHECK(identity_return.value != nullptr);
+    const auto& parameter_reference = std::get<tpp::IdentifierExpression>(
+        identity_return.value->node);
+    check_resolution(
+        session.resolutions(),
+        parameter_reference,
+        tpp::ResolutionTarget{*parameter_symbol});
+
+    const auto& local_statement =
+        std::get<tpp::Statement>(main.body->items[0]);
+    const auto& local =
+        std::get<tpp::VariableDeclaration>(local_statement.node);
+    const auto local_symbol = session.declarations().symbol_for(local);
+    TPP_CHECK(local_symbol.has_value());
+    TPP_CHECK(local.initializer != nullptr);
+    const auto& global_reference = std::get<tpp::IdentifierExpression>(
+        local.initializer->node);
+    check_resolution(
+        session.resolutions(),
+        global_reference,
+        tpp::ResolutionTarget{*global_symbol});
+
+    const auto& assignment_statement =
+        std::get<tpp::Statement>(main.body->items[1]);
+    const auto& assignment =
+        std::get<tpp::AssignmentStatement>(assignment_statement.node);
+    const auto assignment_target =
+        session.resolutions().resolution_for(assignment.target);
+    TPP_CHECK(assignment_target.has_value());
+    TPP_CHECK_EQ(
+        *assignment_target,
+        tpp::ResolutionTarget{*local_symbol});
+    TPP_CHECK(assignment.value != nullptr);
+
+    const auto& identity_call =
+        std::get<tpp::CallExpression>(assignment.value->node);
+    TPP_CHECK(identity_call.callee != nullptr);
+    TPP_CHECK_EQ(identity_call.arguments.size(), std::size_t{1});
+    TPP_CHECK(identity_call.arguments.front() != nullptr);
+    const auto& identity_reference = std::get<tpp::IdentifierExpression>(
+        identity_call.callee->node);
+    const auto& local_argument = std::get<tpp::IdentifierExpression>(
+        identity_call.arguments.front()->node);
+    check_resolution(
+        session.resolutions(),
+        identity_reference,
+        tpp::ResolutionTarget{*identity_symbol});
+    check_resolution(
+        session.resolutions(),
+        local_argument,
+        tpp::ResolutionTarget{*local_symbol});
+
+    const auto& print_statement =
+        std::get<tpp::Statement>(main.body->items[2]);
+    const auto& print_expression =
+        std::get<tpp::ExpressionStatement>(print_statement.node);
+    TPP_CHECK(print_expression.expression != nullptr);
+    const auto& print_call =
+        std::get<tpp::CallExpression>(print_expression.expression->node);
+    TPP_CHECK(print_call.callee != nullptr);
+    TPP_CHECK_EQ(print_call.arguments.size(), std::size_t{1});
+    TPP_CHECK(print_call.arguments.front() != nullptr);
+    const auto& print_reference = std::get<tpp::IdentifierExpression>(
+        print_call.callee->node);
+    const auto& printed_local = std::get<tpp::IdentifierExpression>(
+        print_call.arguments.front()->node);
+    check_resolution(
+        session.resolutions(),
+        print_reference,
+        tpp::ResolutionTarget{tpp::BuiltinFunctionKind::print});
+    check_resolution(
+        session.resolutions(),
+        printed_local,
+        tpp::ResolutionTarget{*local_symbol});
+}
+
+void name_resolution_errors_retain_partial_semantic_state()
+{
+    tpp::CompilationSession session;
+    const tpp::Compiler compiler;
+
+    const bool succeeded = compiler.compile(
+        data_path("unknown_name.tpp"),
+        session);
+
+    TPP_CHECK(!succeeded);
+    TPP_CHECK(session.program().has_value());
+    TPP_CHECK(!session.declarations().empty());
+    TPP_CHECK(!session.resolutions().empty());
+    TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{1});
+    TPP_CHECK_EQ(session.symbols().scope_count(), std::size_t{2});
+    TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
+    TPP_CHECK_EQ(session.diagnostics().diagnostics().size(), std::size_t{1});
+
+    const auto& diagnostic = session.diagnostics().diagnostics().front();
+    TPP_CHECK_EQ(diagnostic.severity, tpp::DiagnosticSeverity::error);
+    TPP_CHECK_EQ(diagnostic.message, std::string{"unknown name 'missing'"});
+    TPP_CHECK(diagnostic.primary_span.has_value());
+    TPP_CHECK_EQ(diagnostic.primary_span->begin, std::size_t{23});
+    TPP_CHECK_EQ(diagnostic.primary_span->end, std::size_t{30});
+
+    const auto& main = std::get<tpp::FunctionDeclaration>(
+        session.program()->declarations.front());
+    TPP_CHECK(main.body != nullptr);
+    const auto& statement = std::get<tpp::Statement>(main.body->items.front());
+    const auto& expression_statement =
+        std::get<tpp::ExpressionStatement>(statement.node);
+    TPP_CHECK(expression_statement.expression != nullptr);
+    const auto& call = std::get<tpp::CallExpression>(
+        expression_statement.expression->node);
+    TPP_CHECK(call.callee != nullptr);
+    TPP_CHECK_EQ(call.arguments.size(), std::size_t{1});
+    TPP_CHECK(call.arguments.front() != nullptr);
+
+    const auto& print_reference = std::get<tpp::IdentifierExpression>(
+        call.callee->node);
+    const auto& missing_reference = std::get<tpp::IdentifierExpression>(
+        call.arguments.front()->node);
+    check_resolution(
+        session.resolutions(),
+        print_reference,
+        tpp::ResolutionTarget{tpp::BuiltinFunctionKind::print});
+    TPP_CHECK(!session.resolutions()
+                   .resolution_for(missing_reference)
+                   .has_value());
+}
+
 }
 
 int main()
@@ -414,5 +603,9 @@ int main()
          compiler_populates_semantic_state_after_reset},
         {"declaration errors retain collected state",
          declaration_errors_fail_after_collecting_independent_state},
+        {"compiler resolves user names and builtins",
+         compiler_resolves_user_names_and_builtins},
+        {"name errors retain partial semantic state",
+         name_resolution_errors_retain_partial_semantic_state},
     });
 }
