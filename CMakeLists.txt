@@ -31,6 +31,9 @@ add_library(tpp_compiler STATIC
     src/semantic/symbol_table.cpp
     src/semantic/declaration_info.cpp
     src/semantic/declaration_collector.cpp
+    src/semantic/builtin.cpp
+    src/semantic/resolution_info.cpp
+    src/semantic/name_resolver.cpp
     src/driver/compiler.cpp
 )
 
