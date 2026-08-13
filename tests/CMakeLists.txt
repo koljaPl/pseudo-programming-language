@@ -75,6 +75,11 @@ tpp_add_test(
 )
 
 tpp_add_test(
+    control_flow_checker_tests
+    control_flow_checker_tests.cpp
+)
+
+tpp_add_test(
     driver_tests
     driver_tests.cpp
 )
@@ -413,6 +418,62 @@ tpp_add_cli_integration_test(
     EXIT_CODE 1
     STDERR_FILE "${type_error_stderr}"
     ARGS --emit-cpp "${type_error_source}"
+)
+
+set(control_flow_error_source
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/control_flow_error.tpp"
+)
+set(control_flow_error_stderr
+    "${CMAKE_CURRENT_BINARY_DIR}/control_flow_error.expected.stderr"
+)
+configure_file(
+    data/control_flow_error.expected.stderr.in
+    "${control_flow_error_stderr}"
+    @ONLY
+)
+
+tpp_add_cli_integration_test(
+    control_flow_error
+    EXIT_CODE 1
+    STDERR_FILE "${control_flow_error_stderr}"
+    ARGS "${control_flow_error_source}"
+)
+
+tpp_add_cli_integration_test(
+    suppress_dump_on_control_flow_error
+    EXIT_CODE 1
+    STDERR_FILE "${control_flow_error_stderr}"
+    ARGS --dump-ast "${control_flow_error_source}"
+)
+
+tpp_add_cli_integration_test(
+    suppress_emit_on_control_flow_error
+    EXIT_CODE 1
+    STDERR_FILE "${control_flow_error_stderr}"
+    ARGS --emit-cpp "${control_flow_error_source}"
+)
+
+set(unreachable_warning_source
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/unreachable_warning.tpp"
+)
+set(unreachable_warning_stdout
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/unreachable_warning.expected.cpp"
+)
+set(unreachable_warning_stderr
+    "${CMAKE_CURRENT_BINARY_DIR}/unreachable_warning.expected.stderr"
+)
+configure_file(
+    data/unreachable_warning.expected.stderr.in
+    "${unreachable_warning_stderr}"
+    @ONLY
+)
+
+tpp_add_cli_integration_test(
+    emit_cpp_with_unreachable_warning
+    EXIT_CODE 0
+    STDOUT_FILE "${unreachable_warning_stdout}"
+    STDERR_FILE "${unreachable_warning_stderr}"
+    ARGS --emit-cpp "${unreachable_warning_source}"
 )
 
 set(codegen_unsupported_source

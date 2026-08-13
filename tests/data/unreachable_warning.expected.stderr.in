@@ -1,0 +1,3 @@
+@unreachable_warning_source@:3:5: warning: unreachable statement
+  3 |     print(1);
+    |     ^~~~~~~~~

@@ -1,0 +1,3 @@
+@control_flow_error_source@:2:5: error: 'break' is only allowed inside a loop
+  2 |     break;
+    |     ^~~~~~

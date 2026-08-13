@@ -272,6 +272,81 @@ void type_errors_suppress_all_output_modes()
     TPP_CHECK_EQ(cpp.stderr_text, expected_error);
 }
 
+void control_flow_errors_suppress_all_output_modes()
+{
+    const auto input =
+        std::filesystem::path(TPP_TEST_DATA_DIR) / "control_flow_error.tpp";
+    const auto expected_error =
+        input.string()
+        + ":2:5: error: 'break' is only allowed inside a loop\n"
+          "  2 |     break;\n"
+          "    |     ^~~~~~\n";
+
+    const auto normal = invoke({input.string()});
+    TPP_CHECK_EQ(normal.exit_code, 1);
+    TPP_CHECK(normal.stdout_text.empty());
+    TPP_CHECK_EQ(normal.stderr_text, expected_error);
+
+    const auto ast = invoke({"--dump-ast", input.string()});
+    TPP_CHECK_EQ(ast.exit_code, 1);
+    TPP_CHECK(ast.stdout_text.empty());
+    TPP_CHECK_EQ(ast.stderr_text, expected_error);
+
+    const auto cpp = invoke({input.string(), "--emit-cpp"});
+    TPP_CHECK_EQ(cpp.exit_code, 1);
+    TPP_CHECK(cpp.stdout_text.empty());
+    TPP_CHECK_EQ(cpp.stderr_text, expected_error);
+}
+
+void unreachable_warnings_preserve_successful_output_modes()
+{
+    const auto input =
+        std::filesystem::path(TPP_TEST_DATA_DIR) / "unreachable_warning.tpp";
+    const auto expected_warning =
+        input.string()
+        + ":3:5: warning: unreachable statement\n"
+          "  3 |     print(1);\n"
+          "    |     ^~~~~~~~~\n";
+    constexpr std::string_view expected_ast =
+        "Program\n"
+        "  Function name=\"main\" return=int\n"
+        "    Parameters\n"
+        "    Block\n"
+        "      Return\n"
+        "        IntegerLiteral value=\"0\"\n"
+        "      ExpressionStatement\n"
+        "        Call\n"
+        "          Callee\n"
+        "            Identifier name=\"print\"\n"
+        "          Arguments\n"
+        "            IntegerLiteral value=\"1\"\n";
+    constexpr std::string_view expected_cpp =
+        "#include <cstdint>\n"
+        "#include <iostream>\n"
+        "#include <string>\n"
+        "\n"
+        "int main()\n"
+        "{\n"
+        "    return static_cast<int>(std::int64_t{0});\n"
+        "    std::cout << std::boolalpha << std::int64_t{1} << '\\n';\n"
+        "}\n";
+
+    const auto normal = invoke({input.string()});
+    TPP_CHECK_EQ(normal.exit_code, 0);
+    TPP_CHECK(normal.stdout_text.empty());
+    TPP_CHECK_EQ(normal.stderr_text, expected_warning);
+
+    const auto ast = invoke({"--dump-ast", input.string()});
+    TPP_CHECK_EQ(ast.exit_code, 0);
+    TPP_CHECK_EQ(ast.stdout_text, expected_ast);
+    TPP_CHECK_EQ(ast.stderr_text, expected_warning);
+
+    const auto cpp = invoke({input.string(), "--emit-cpp"});
+    TPP_CHECK_EQ(cpp.exit_code, 0);
+    TPP_CHECK_EQ(cpp.stdout_text, expected_cpp);
+    TPP_CHECK_EQ(cpp.stderr_text, expected_warning);
+}
+
 void emit_cpp_requires_an_input_file()
 {
     const auto result = invoke({"--emit-cpp"});
@@ -425,6 +500,10 @@ int main()
          name_resolution_errors_suppress_all_output_modes},
         {"type errors suppress all output modes",
          type_errors_suppress_all_output_modes},
+        {"control-flow errors suppress all output modes",
+         control_flow_errors_suppress_all_output_modes},
+        {"unreachable warnings preserve successful output modes",
+         unreachable_warnings_preserve_successful_output_modes},
         {"emit C++ requires input", emit_cpp_requires_an_input_file},
         {"emit C++ option order and repetition",
          emit_cpp_accepts_the_flag_before_after_and_repeated},
