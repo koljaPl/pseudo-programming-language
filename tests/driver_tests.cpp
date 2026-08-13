@@ -270,6 +270,30 @@ void compilation_session_can_be_reused_without_stale_results()
     TPP_CHECK(!session.type_info().empty());
     TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{2});
 
+    TPP_CHECK(!compiler.compile(
+        data_path("control_flow_error.tpp"),
+        session));
+    TPP_CHECK(session.program().has_value());
+    TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
+    TPP_CHECK(!session.declarations().empty());
+    TPP_CHECK(session.resolutions().empty());
+    TPP_CHECK(!session.type_info().empty());
+    TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{2});
+
+    TPP_CHECK(compiler.compile(
+        data_path("unreachable_warning.tpp"),
+        session));
+    TPP_CHECK(session.program().has_value());
+    TPP_CHECK(!session.diagnostics().has_errors());
+    TPP_CHECK_EQ(session.diagnostics().diagnostics().size(), std::size_t{1});
+    TPP_CHECK_EQ(
+        session.diagnostics().diagnostics().front().severity,
+        tpp::DiagnosticSeverity::warning);
+    TPP_CHECK(!session.declarations().empty());
+    TPP_CHECK(!session.resolutions().empty());
+    TPP_CHECK(!session.type_info().empty());
+    TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{1});
+
     TPP_CHECK(compiler.compile(
         data_path("empty.tpp"),
         session));
@@ -306,10 +330,15 @@ void compilation_session_reset_clears_semantic_state()
 {
     tpp::CompilationSession session;
     const tpp::Compiler compiler;
-    TPP_CHECK(compiler.compile(data_path("codegen_minimal.tpp"), session));
+    TPP_CHECK(compiler.compile(data_path("unreachable_warning.tpp"), session));
     TPP_CHECK(!session.declarations().empty());
     TPP_CHECK(!session.resolutions().empty());
     TPP_CHECK(!session.type_info().empty());
+    TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{0});
+    TPP_CHECK_EQ(session.diagnostics().diagnostics().size(), std::size_t{1});
+    TPP_CHECK_EQ(
+        session.diagnostics().diagnostics().front().severity,
+        tpp::DiagnosticSeverity::warning);
 
     const auto integer_type = session.types().integer_type();
     const auto vector_type = session.types().vector_type(integer_type);
@@ -662,6 +691,76 @@ void type_errors_retain_partial_type_information()
         std::optional<tpp::TypeId>{session.types().string_type()});
 }
 
+void control_flow_errors_fail_after_type_checking()
+{
+    tpp::CompilationSession session;
+    const tpp::Compiler compiler;
+
+    const bool succeeded = compiler.compile(
+        data_path("control_flow_error.tpp"),
+        session);
+
+    TPP_CHECK(!succeeded);
+    TPP_CHECK(session.program().has_value());
+    TPP_CHECK(!session.declarations().empty());
+    TPP_CHECK(session.resolutions().empty());
+    TPP_CHECK(!session.type_info().empty());
+    TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{2});
+    TPP_CHECK_EQ(session.symbols().scope_count(), std::size_t{3});
+    TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
+    TPP_CHECK_EQ(session.diagnostics().diagnostics().size(), std::size_t{1});
+
+    const auto& diagnostic = session.diagnostics().diagnostics().front();
+    TPP_CHECK_EQ(diagnostic.severity, tpp::DiagnosticSeverity::error);
+    TPP_CHECK_EQ(
+        diagnostic.message,
+        std::string{"'break' is only allowed inside a loop"});
+    TPP_CHECK(diagnostic.primary_span.has_value());
+    TPP_CHECK_EQ(diagnostic.primary_span->begin, std::size_t{20});
+    TPP_CHECK_EQ(diagnostic.primary_span->end, std::size_t{26});
+
+    const auto& main = std::get<tpp::FunctionDeclaration>(
+        session.program()->declarations[1]);
+    TPP_CHECK(main.body != nullptr);
+    TPP_CHECK_EQ(main.body->items.size(), std::size_t{1});
+    const auto& statement =
+        std::get<tpp::Statement>(main.body->items.front());
+    const auto& return_statement =
+        std::get<tpp::ReturnStatement>(statement.node);
+    TPP_CHECK(return_statement.value != nullptr);
+    TPP_CHECK_EQ(
+        session.type_info().type_of(*return_statement.value),
+        std::optional<tpp::TypeId>{session.types().integer_type()});
+}
+
+void unreachable_warnings_do_not_fail_compilation()
+{
+    tpp::CompilationSession session;
+    const tpp::Compiler compiler;
+
+    const bool succeeded = compiler.compile(
+        data_path("unreachable_warning.tpp"),
+        session);
+
+    TPP_CHECK(succeeded);
+    TPP_CHECK(session.program().has_value());
+    TPP_CHECK(!session.declarations().empty());
+    TPP_CHECK(!session.resolutions().empty());
+    TPP_CHECK(!session.type_info().empty());
+    TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{1});
+    TPP_CHECK_EQ(session.symbols().scope_count(), std::size_t{2});
+    TPP_CHECK(!session.diagnostics().has_errors());
+    TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{0});
+    TPP_CHECK_EQ(session.diagnostics().diagnostics().size(), std::size_t{1});
+
+    const auto& diagnostic = session.diagnostics().diagnostics().front();
+    TPP_CHECK_EQ(diagnostic.severity, tpp::DiagnosticSeverity::warning);
+    TPP_CHECK_EQ(diagnostic.message, std::string{"unreachable statement"});
+    TPP_CHECK(diagnostic.primary_span.has_value());
+    TPP_CHECK_EQ(diagnostic.primary_span->begin, std::size_t{31});
+    TPP_CHECK_EQ(diagnostic.primary_span->end, std::size_t{40});
+}
+
 }
 
 int main()
@@ -690,5 +789,9 @@ int main()
          name_resolution_errors_retain_partial_semantic_state},
         {"type errors retain partial type information",
          type_errors_retain_partial_type_information},
+        {"control-flow errors follow successful type checking",
+         control_flow_errors_fail_after_type_checking},
+        {"unreachable warnings preserve compilation success",
+         unreachable_warnings_do_not_fail_compilation},
     });
 }
