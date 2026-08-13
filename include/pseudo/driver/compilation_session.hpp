@@ -7,6 +7,7 @@
 #include "pseudo/semantic/resolution_info.hpp"
 #include "pseudo/semantic/symbol_table.hpp"
 #include "pseudo/semantic/type_context.hpp"
+#include "pseudo/semantic/type_info.hpp"
 #include "pseudo/source/source_manager.hpp"
 
 #include <optional>
@@ -17,6 +18,7 @@ namespace tpp {
 class CompilationSession {
 public:
     void reset() {
+        type_info_ = TypeInfo{};
         resolutions_ = ResolutionInfo{};
         declarations_ = DeclarationInfo{};
         program_.reset();
@@ -75,6 +77,14 @@ public:
         return resolutions_;
     }
 
+    [[nodiscard]] TypeInfo& type_info() noexcept {
+        return type_info_;
+    }
+
+    [[nodiscard]] const TypeInfo& type_info() const noexcept {
+        return type_info_;
+    }
+
     [[nodiscard]] std::vector<Token>& tokens() noexcept {
         return tokens_;
     }
@@ -100,6 +110,7 @@ private:
     std::optional<Program> program_;
     DeclarationInfo declarations_;
     ResolutionInfo resolutions_;
+    TypeInfo type_info_;
 };
 
 }

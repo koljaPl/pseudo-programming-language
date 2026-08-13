@@ -5,6 +5,7 @@
 #include "pseudo/parser/parser.hpp"
 #include "pseudo/semantic/declaration_collector.hpp"
 #include "pseudo/semantic/name_resolver.hpp"
+#include "pseudo/semantic/type_checker.hpp"
 
 #include <variant>
 
@@ -54,7 +55,18 @@ bool Compiler::compile(
         session.declarations(),
         session.resolutions(),
         session.diagnostics()};
-    return resolver.resolve(*session.program());
+    if (!resolver.resolve(*session.program())) {
+        return false;
+    }
+
+    TypeChecker type_checker{
+        session.types(),
+        session.symbols(),
+        session.declarations(),
+        session.resolutions(),
+        session.type_info(),
+        session.diagnostics()};
+    return type_checker.check(*session.program());
 }
 
 }
