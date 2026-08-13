@@ -3,6 +3,7 @@
 #include "pseudo/driver/compilation_session.hpp"
 #include "pseudo/lexer/lexer.hpp"
 #include "pseudo/parser/parser.hpp"
+#include "pseudo/semantic/control_flow_checker.hpp"
 #include "pseudo/semantic/declaration_collector.hpp"
 #include "pseudo/semantic/name_resolver.hpp"
 #include "pseudo/semantic/type_checker.hpp"
@@ -66,7 +67,12 @@ bool Compiler::compile(
         session.resolutions(),
         session.type_info(),
         session.diagnostics()};
-    return type_checker.check(*session.program());
+    if (!type_checker.check(*session.program())) {
+        return false;
+    }
+
+    ControlFlowChecker control_flow_checker{session.diagnostics()};
+    return control_flow_checker.check(*session.program());
 }
 
 }

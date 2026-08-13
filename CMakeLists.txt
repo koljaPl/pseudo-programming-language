@@ -36,6 +36,7 @@ add_library(tpp_compiler STATIC
     src/semantic/name_resolver.cpp
     src/semantic/type_info.cpp
     src/semantic/type_checker.cpp
+    src/semantic/control_flow_checker.cpp
     src/driver/compiler.cpp
 )
 
