@@ -70,6 +70,11 @@ tpp_add_test(
 )
 
 tpp_add_test(
+    type_checker_tests
+    type_checker_tests.cpp
+)
+
+tpp_add_test(
     driver_tests
     driver_tests.cpp
 )
@@ -375,6 +380,39 @@ tpp_add_cli_integration_test(
     EXIT_CODE 1
     STDERR_FILE "${unknown_name_stderr}"
     ARGS --emit-cpp "${unknown_name_source}"
+)
+
+set(type_error_source
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/type_error.tpp"
+)
+set(type_error_stderr
+    "${CMAKE_CURRENT_BINARY_DIR}/type_error.expected.stderr"
+)
+configure_file(
+    data/type_error.expected.stderr.in
+    "${type_error_stderr}"
+    @ONLY
+)
+
+tpp_add_cli_integration_test(
+    type_error
+    EXIT_CODE 1
+    STDERR_FILE "${type_error_stderr}"
+    ARGS "${type_error_source}"
+)
+
+tpp_add_cli_integration_test(
+    suppress_dump_on_type_error
+    EXIT_CODE 1
+    STDERR_FILE "${type_error_stderr}"
+    ARGS --dump-ast "${type_error_source}"
+)
+
+tpp_add_cli_integration_test(
+    suppress_emit_on_type_error
+    EXIT_CODE 1
+    STDERR_FILE "${type_error_stderr}"
+    ARGS --emit-cpp "${type_error_source}"
 )
 
 set(codegen_unsupported_source

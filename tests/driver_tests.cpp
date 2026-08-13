@@ -49,6 +49,7 @@ void check_fresh_semantic_state(const tpp::CompilationSession& session)
     TPP_CHECK_EQ(session.symbols().global_scope(), tpp::ScopeId{0});
     TPP_CHECK(session.declarations().empty());
     TPP_CHECK(session.resolutions().empty());
+    TPP_CHECK(session.type_info().empty());
 }
 
 void check_resolution(
@@ -142,6 +143,17 @@ void valid_source_produces_tokens_without_diagnostics()
         function_symbol->return_type,
         session.types().integer_type());
     TPP_CHECK(function_symbol->parameter_types.empty());
+
+    TPP_CHECK(function->body != nullptr);
+    TPP_CHECK_EQ(function->body->items.size(), std::size_t{1});
+    const auto& statement =
+        std::get<tpp::Statement>(function->body->items.front());
+    const auto& return_statement =
+        std::get<tpp::ReturnStatement>(statement.node);
+    TPP_CHECK(return_statement.value != nullptr);
+    TPP_CHECK_EQ(
+        session.type_info().type_of(*return_statement.value),
+        std::optional<tpp::TypeId>{session.types().integer_type()});
 }
 
 void lexical_error_fails_but_recovers_to_eof()
@@ -235,6 +247,7 @@ void compilation_session_can_be_reused_without_stale_results()
     TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
     TPP_CHECK(!session.declarations().empty());
     TPP_CHECK(session.resolutions().empty());
+    TPP_CHECK(session.type_info().empty());
     TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{2});
 
     TPP_CHECK(!compiler.compile(
@@ -244,7 +257,26 @@ void compilation_session_can_be_reused_without_stale_results()
     TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
     TPP_CHECK(!session.declarations().empty());
     TPP_CHECK(!session.resolutions().empty());
+    TPP_CHECK(session.type_info().empty());
     TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{1});
+
+    TPP_CHECK(!compiler.compile(
+        data_path("type_error.tpp"),
+        session));
+    TPP_CHECK(session.program().has_value());
+    TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
+    TPP_CHECK(!session.declarations().empty());
+    TPP_CHECK(session.resolutions().empty());
+    TPP_CHECK(!session.type_info().empty());
+    TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{2});
+
+    TPP_CHECK(compiler.compile(
+        data_path("empty.tpp"),
+        session));
+    TPP_CHECK(session.program().has_value());
+    TPP_CHECK(session.program()->declarations.empty());
+    TPP_CHECK(!session.diagnostics().has_errors());
+    check_fresh_semantic_state(session);
 
     TPP_CHECK(compiler.compile(
         data_path("valid_lexical.tpp"),
@@ -257,6 +289,7 @@ void compilation_session_can_be_reused_without_stale_results()
         std::size_t{0});
     TPP_CHECK(!session.declarations().empty());
     TPP_CHECK(session.resolutions().empty());
+    TPP_CHECK(!session.type_info().empty());
     TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{1});
     TPP_CHECK_EQ(session.symbols().scope_count(), std::size_t{2});
 
@@ -276,6 +309,7 @@ void compilation_session_reset_clears_semantic_state()
     TPP_CHECK(compiler.compile(data_path("codegen_minimal.tpp"), session));
     TPP_CHECK(!session.declarations().empty());
     TPP_CHECK(!session.resolutions().empty());
+    TPP_CHECK(!session.type_info().empty());
 
     const auto integer_type = session.types().integer_type();
     const auto vector_type = session.types().vector_type(integer_type);
@@ -340,6 +374,7 @@ void compiler_populates_semantic_state_after_reset()
     TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{1});
     TPP_CHECK(!session.declarations().empty());
     TPP_CHECK(session.resolutions().empty());
+    TPP_CHECK(!session.type_info().empty());
     TPP_CHECK(!session.symbols()
                    .lookup_local(session.symbols().global_scope(), "stale")
                    .has_value());
@@ -377,6 +412,7 @@ void declaration_errors_fail_after_collecting_independent_state()
     TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{2});
     TPP_CHECK(!session.declarations().empty());
     TPP_CHECK(session.resolutions().empty());
+    TPP_CHECK(session.type_info().empty());
 
     const auto diagnostics = session.diagnostics().diagnostics();
     TPP_CHECK_EQ(
@@ -429,6 +465,7 @@ void compiler_resolves_user_names_and_builtins()
     TPP_CHECK(!session.diagnostics().has_errors());
     TPP_CHECK(session.program().has_value());
     TPP_CHECK(!session.resolutions().empty());
+    TPP_CHECK(!session.type_info().empty());
 
     const auto& declarations = session.program()->declarations;
     TPP_CHECK_EQ(declarations.size(), std::size_t{3});
@@ -543,6 +580,7 @@ void name_resolution_errors_retain_partial_semantic_state()
     TPP_CHECK(session.program().has_value());
     TPP_CHECK(!session.declarations().empty());
     TPP_CHECK(!session.resolutions().empty());
+    TPP_CHECK(session.type_info().empty());
     TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{1});
     TPP_CHECK_EQ(session.symbols().scope_count(), std::size_t{2});
     TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
@@ -581,6 +619,49 @@ void name_resolution_errors_retain_partial_semantic_state()
                    .has_value());
 }
 
+void type_errors_retain_partial_type_information()
+{
+    tpp::CompilationSession session;
+    const tpp::Compiler compiler;
+
+    const bool succeeded = compiler.compile(
+        data_path("type_error.tpp"),
+        session);
+
+    TPP_CHECK(!succeeded);
+    TPP_CHECK(session.program().has_value());
+    TPP_CHECK(!session.declarations().empty());
+    TPP_CHECK(session.resolutions().empty());
+    TPP_CHECK(!session.type_info().empty());
+    TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{2});
+    TPP_CHECK_EQ(session.symbols().scope_count(), std::size_t{2});
+    TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
+    TPP_CHECK_EQ(session.diagnostics().diagnostics().size(), std::size_t{1});
+
+    const auto& diagnostic = session.diagnostics().diagnostics().front();
+    TPP_CHECK_EQ(diagnostic.severity, tpp::DiagnosticSeverity::error);
+    TPP_CHECK_EQ(
+        diagnostic.message,
+        std::string{
+            "cannot initialize 'int' with value of type 'string'"});
+    TPP_CHECK(diagnostic.primary_span.has_value());
+    TPP_CHECK_EQ(diagnostic.primary_span->begin, std::size_t{29});
+    TPP_CHECK_EQ(diagnostic.primary_span->end, std::size_t{35});
+
+    const auto& main = std::get<tpp::FunctionDeclaration>(
+        session.program()->declarations.front());
+    TPP_CHECK(main.body != nullptr);
+    TPP_CHECK_EQ(main.body->items.size(), std::size_t{1});
+    const auto& statement =
+        std::get<tpp::Statement>(main.body->items.front());
+    const auto& variable =
+        std::get<tpp::VariableDeclaration>(statement.node);
+    TPP_CHECK(variable.initializer != nullptr);
+    TPP_CHECK_EQ(
+        session.type_info().type_of(*variable.initializer),
+        std::optional<tpp::TypeId>{session.types().string_type()});
+}
+
 }
 
 int main()
@@ -607,5 +688,7 @@ int main()
          compiler_resolves_user_names_and_builtins},
         {"name errors retain partial semantic state",
          name_resolution_errors_retain_partial_semantic_state},
+        {"type errors retain partial type information",
+         type_errors_retain_partial_type_information},
     });
 }
