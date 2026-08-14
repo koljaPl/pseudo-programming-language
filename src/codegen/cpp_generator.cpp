@@ -2,7 +2,14 @@
 
 #include "pseudo/ast/program.hpp"
 #include "pseudo/diagnostics/diagnostic_engine.hpp"
+#include "pseudo/semantic/builtin.hpp"
+#include "pseudo/semantic/declaration_info.hpp"
+#include "pseudo/semantic/resolution_info.hpp"
+#include "pseudo/semantic/symbol_table.hpp"
+#include "pseudo/semantic/type_context.hpp"
+#include "pseudo/semantic/type_info.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <locale>
 #include <optional>
@@ -10,8 +17,10 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <unordered_set>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace tpp {
 namespace {
@@ -134,43 +143,6 @@ constexpr std::string_view minimum_integer_magnitude =
     return std::nullopt;
 }
 
-[[nodiscard]] bool is_arithmetic_operator(
-    const BinaryOperator operator_kind) noexcept
-{
-    switch (operator_kind) {
-    case BinaryOperator::add:
-    case BinaryOperator::subtract:
-    case BinaryOperator::multiply:
-    case BinaryOperator::divide:
-    case BinaryOperator::remainder:
-        return true;
-    case BinaryOperator::logical_or:
-    case BinaryOperator::logical_and:
-    case BinaryOperator::equal:
-    case BinaryOperator::not_equal:
-    case BinaryOperator::less:
-    case BinaryOperator::less_equal:
-    case BinaryOperator::greater:
-    case BinaryOperator::greater_equal:
-        return false;
-    }
-
-    return false;
-}
-
-[[nodiscard]] bool is_integer_return_type(const ReturnType& return_type)
-{
-    const auto* value_type = std::get_if<ValueType>(&return_type.node);
-    if (value_type == nullptr) {
-        return false;
-    }
-
-    const auto* scalar_type =
-        std::get_if<ScalarTypeKind>(&value_type->node);
-    return scalar_type != nullptr
-        && *scalar_type == ScalarTypeKind::integer;
-}
-
 [[nodiscard]] const IntegerLiteralExpression* unwrap_integer_literal(
     const Expression& expression)
 {
@@ -188,38 +160,44 @@ constexpr std::string_view minimum_integer_magnitude =
     return unwrap_integer_literal(*parenthesized->expression);
 }
 
-[[nodiscard]] bool is_integer_return_expression(const Expression& expression)
+[[nodiscard]] std::string_view builtin_name(
+    const BuiltinFunctionKind builtin) noexcept
 {
-    return std::visit(
-        [](const auto& node) -> bool {
-            using Node = std::decay_t<decltype(node)>;
+    switch (builtin) {
+    case BuiltinFunctionKind::print:
+        return "print";
+    case BuiltinFunctionKind::read_int:
+        return "read_int";
+    case BuiltinFunctionKind::read_string:
+        return "read_string";
+    case BuiltinFunctionKind::read_char:
+        return "read_char";
+    case BuiltinFunctionKind::len:
+        return "len";
+    case BuiltinFunctionKind::substring:
+        return "substring";
+    }
 
-            if constexpr (std::is_same_v<Node, IntegerLiteralExpression>) {
-                return true;
-            } else if constexpr (std::is_same_v<Node, ParenthesizedExpression>) {
-                return node.expression != nullptr
-                    && is_integer_return_expression(*node.expression);
-            } else if constexpr (std::is_same_v<Node, UnaryExpression>) {
-                return node.operand != nullptr
-                    && (node.operator_kind == UnaryOperator::plus
-                        || node.operator_kind == UnaryOperator::minus)
-                    && is_integer_return_expression(*node.operand);
-            } else if constexpr (std::is_same_v<Node, BinaryExpression>) {
-                return node.left != nullptr && node.right != nullptr
-                    && is_arithmetic_operator(node.operator_kind)
-                    && is_integer_return_expression(*node.left)
-                    && is_integer_return_expression(*node.right);
-            } else {
-                return false;
-            }
-        },
-        expression.node);
+    return "<unknown>";
+}
+
+[[nodiscard]] std::string generated_name(
+    const std::string_view prefix,
+    const SymbolId symbol)
+{
+    std::ostringstream name;
+    name.imbue(std::locale::classic());
+    name << prefix << symbol.value;
+    return name.str();
 }
 
 class CppGenerator {
 public:
-    explicit CppGenerator(DiagnosticEngine& diagnostics)
-        : diagnostics_{diagnostics}
+    CppGenerator(
+        const CppGenerationContext& context,
+        DiagnosticEngine& diagnostics)
+        : context_{context}
+        , diagnostics_{diagnostics}
         , initial_error_count_{diagnostics.error_count()}
     {
         output_.imbue(std::locale::classic());
@@ -227,8 +205,8 @@ public:
 
     [[nodiscard]] std::optional<std::string> generate(const Program& program)
     {
-        const FunctionDeclaration* main_function = validate_program(program);
-        if (main_function == nullptr || has_new_errors()) {
+        validate_program(program);
+        if (has_new_errors()) {
             return std::nullopt;
         }
 
@@ -236,21 +214,41 @@ public:
             << "#include <cstdint>\n"
                "#include <iostream>\n"
                "#include <string>\n"
-               "\n"
-               "int main()\n"
-               "{\n";
+               "\n";
 
-        emit_main_body(*main_function->body);
-        output_ << "}\n";
+        auto has_prototypes = false;
+        for (const auto& function : functions_) {
+            if (function.is_main) {
+                continue;
+            }
+            emit_function_signature(function);
+            output_ << ";\n";
+            has_prototypes = true;
+        }
+        if (has_prototypes) {
+            output_ << '\n';
+        }
+
+        for (std::size_t index = 0; index < functions_.size(); ++index) {
+            if (index != 0) {
+                output_ << '\n';
+            }
+            emit_function_definition(functions_[index]);
+        }
 
         if (has_new_errors()) {
             return std::nullopt;
         }
-
         return output_.str();
     }
 
 private:
+    struct FunctionEntry {
+        const FunctionDeclaration* declaration;
+        SymbolId symbol;
+        bool is_main;
+    };
+
     [[nodiscard]] bool has_new_errors() const noexcept
     {
         return diagnostics_.error_count() != initial_error_count_;
@@ -261,10 +259,84 @@ private:
         diagnostics_.error(span, std::move(message));
     }
 
-    [[nodiscard]] const FunctionDeclaration* validate_program(
-        const Program& program)
+    [[nodiscard]] const Symbol* symbol(
+        const SymbolId id,
+        const SourceSpan span,
+        const std::string_view role)
     {
-        const FunctionDeclaration* main_function = nullptr;
+        if (id.value >= context_.symbols.symbol_count()) {
+            report(
+                span,
+                "malformed semantic state: " + std::string{role}
+                    + " has an invalid symbol");
+            return nullptr;
+        }
+        return &context_.symbols.symbol(id);
+    }
+
+    [[nodiscard]] std::optional<std::string_view> cpp_type(
+        const TypeId type,
+        const SourceSpan span,
+        const std::string_view role)
+    {
+        const auto descriptor = context_.types.lookup(type);
+        if (!descriptor.has_value()) {
+            report(
+                span,
+                "malformed semantic state: " + std::string{role}
+                    + " has an unknown type");
+            return std::nullopt;
+        }
+
+        if (std::holds_alternative<SemanticVectorType>(*descriptor)) {
+            report(
+                span,
+                "C++ code generation does not support vector types in "
+                "function signatures yet");
+            return std::nullopt;
+        }
+
+        switch (std::get<PrimitiveTypeKind>(*descriptor)) {
+        case PrimitiveTypeKind::integer:
+            return "std::int64_t";
+        case PrimitiveTypeKind::boolean:
+            return "bool";
+        case PrimitiveTypeKind::character:
+            return "char";
+        case PrimitiveTypeKind::string:
+            return "std::string";
+        case PrimitiveTypeKind::void_type:
+            return "void";
+        }
+
+        report(span, "malformed semantic state: unknown primitive type");
+        return std::nullopt;
+    }
+
+    [[nodiscard]] const FunctionSymbol* function_symbol(
+        const FunctionEntry& function)
+    {
+        const auto* entry = symbol(
+            function.symbol,
+            function.declaration->name_span,
+            "function declaration");
+        if (entry == nullptr) {
+            return nullptr;
+        }
+
+        const auto* data = std::get_if<FunctionSymbol>(&entry->data);
+        if (data == nullptr) {
+            report(
+                function.declaration->name_span,
+                "malformed semantic state: function declaration symbol is "
+                "not a function");
+        }
+        return data;
+    }
+
+    void validate_program(const Program& program)
+    {
+        const FunctionDeclaration* main_declaration = nullptr;
 
         for (const auto& declaration : program.declarations) {
             std::visit(
@@ -274,58 +346,243 @@ private:
                     if constexpr (std::is_same_v<Node, VariableDeclaration>) {
                         report(
                             node.span,
-                            "C++ code generation does not support global variables yet");
-                    } else if (node.name != "main") {
-                        report(
-                            node.span,
-                            "C++ code generation does not support top-level "
-                            "functions other than 'main' yet");
-                    } else if (main_function != nullptr) {
-                        report(
-                            node.name_span,
-                            "C++ code generation requires exactly one top-level 'main' function");
+                            "C++ code generation does not support global "
+                            "variables yet");
                     } else {
-                        main_function = &node;
+                        const auto is_main = node.name == "main";
+                        if (is_main && main_declaration != nullptr) {
+                            report(
+                                node.name_span,
+                                "C++ code generation requires exactly one "
+                                "top-level 'main' function");
+                            return;
+                        }
+                        if (is_main) {
+                            main_declaration = &node;
+                        }
+                        validate_function(node, is_main);
                     }
                 },
                 declaration);
         }
 
-        if (main_function == nullptr) {
+        if (main_declaration == nullptr) {
             report(
                 program.span,
-                "C++ code generation requires a top-level 'int main()' function");
-            return nullptr;
+                "C++ code generation requires a top-level 'int main()' "
+                "function");
         }
-
-        if (!is_integer_return_type(main_function->return_type)
-            || !main_function->parameters.empty()) {
-            report(
-                main_function->name_span,
-                "C++ code generation requires 'main' to have return type 'int' and no parameters");
-        }
-
-        if (main_function->body == nullptr) {
-            report(
-                main_function->span,
-                "malformed AST: 'main' function has no body");
-            return nullptr;
-        }
-
-        return main_function;
     }
 
-    void emit_main_body(const Block& body)
+    void validate_function(
+        const FunctionDeclaration& declaration,
+        const bool is_main)
+    {
+        const auto function_id = context_.declarations.symbol_for(declaration);
+        if (!function_id.has_value()) {
+            report(
+                declaration.name_span,
+                "malformed semantic state: function declaration has no "
+                "symbol");
+            return;
+        }
+
+        const auto* entry = symbol(
+            *function_id,
+            declaration.name_span,
+            "function declaration");
+        if (entry == nullptr) {
+            return;
+        }
+        const auto* function = std::get_if<FunctionSymbol>(&entry->data);
+        if (function == nullptr) {
+            report(
+                declaration.name_span,
+                "malformed semantic state: function declaration symbol is "
+                "not a function");
+            return;
+        }
+
+        top_level_function_ids_.insert(function_id->value);
+        functions_.push_back(FunctionEntry{
+            .declaration = &declaration,
+            .symbol = *function_id,
+            .is_main = is_main,
+        });
+
+        if (is_main) {
+            main_symbol_ = *function_id;
+            if (function->return_type != context_.types.integer_type()
+                || !function->parameter_types.empty()
+                || !declaration.parameters.empty()) {
+                report(
+                    declaration.name_span,
+                    "C++ code generation requires 'main' to have return type "
+                    "'int' and no parameters");
+            }
+        } else {
+            (void)cpp_type(
+                function->return_type,
+                declaration.return_type.span,
+                "function return type");
+        }
+
+        if (declaration.parameters.size()
+            != function->parameter_types.size()) {
+            report(
+                declaration.name_span,
+                "malformed semantic state: function parameter signature "
+                "does not match its declaration");
+        }
+
+        const auto parameter_count = std::min(
+            declaration.parameters.size(),
+            function->parameter_types.size());
+        for (std::size_t index = 0; index < parameter_count; ++index) {
+            validate_parameter(
+                declaration.parameters[index],
+                function->parameter_types[index]);
+        }
+
+        if (declaration.body == nullptr) {
+            report(
+                declaration.span,
+                "malformed AST: function '" + declaration.name
+                    + "' has no body");
+        }
+    }
+
+    void validate_parameter(
+        const Parameter& parameter,
+        const TypeId signature_type)
+    {
+        const auto parameter_id = context_.declarations.symbol_for(parameter);
+        if (!parameter_id.has_value()) {
+            report(
+                parameter.name_span,
+                "malformed semantic state: parameter declaration has no "
+                "symbol");
+            return;
+        }
+
+        const auto* entry = symbol(
+            *parameter_id,
+            parameter.name_span,
+            "parameter declaration");
+        if (entry == nullptr) {
+            return;
+        }
+        const auto* data = std::get_if<ParameterSymbol>(&entry->data);
+        if (data == nullptr) {
+            report(
+                parameter.name_span,
+                "malformed semantic state: parameter declaration symbol is "
+                "not a parameter");
+            return;
+        }
+        if (data->type != signature_type) {
+            report(
+                parameter.name_span,
+                "malformed semantic state: parameter type does not match "
+                "function signature");
+            return;
+        }
+
+        const auto spelling = cpp_type(
+            signature_type,
+            parameter.type.span,
+            "parameter");
+        if (spelling.has_value() && *spelling == "void") {
+            report(
+                parameter.type.span,
+                "malformed semantic state: parameter has type 'void'");
+        }
+    }
+
+    void emit_function_signature(const FunctionEntry& entry)
+    {
+        const auto* function = function_symbol(entry);
+        if (function == nullptr) {
+            return;
+        }
+
+        if (entry.is_main) {
+            output_ << "int main()";
+            return;
+        }
+
+        const auto return_type = cpp_type(
+            function->return_type,
+            entry.declaration->return_type.span,
+            "function return type");
+        if (!return_type.has_value()) {
+            return;
+        }
+        output_ << *return_type << ' '
+                << generated_name("tpp_function_", entry.symbol) << '(';
+
+        for (std::size_t index = 0;
+             index < entry.declaration->parameters.size();
+             ++index) {
+            if (index != 0) {
+                output_ << ", ";
+            }
+            const auto& parameter = entry.declaration->parameters[index];
+            const auto parameter_id =
+                context_.declarations.symbol_for(parameter);
+            if (!parameter_id.has_value()
+                || index >= function->parameter_types.size()) {
+                report(
+                    parameter.name_span,
+                    "malformed semantic state: parameter is missing from "
+                    "function signature");
+                continue;
+            }
+            const auto parameter_type = cpp_type(
+                function->parameter_types[index],
+                parameter.type.span,
+                "parameter");
+            if (!parameter_type.has_value()) {
+                continue;
+            }
+            output_ << *parameter_type << ' '
+                    << generated_name("tpp_parameter_", *parameter_id);
+        }
+        output_ << ')';
+    }
+
+    void emit_function_definition(const FunctionEntry& entry)
+    {
+        emit_function_signature(entry);
+        output_ << "\n{\n";
+
+        current_function_ = &entry;
+        current_parameter_ids_.clear();
+        for (const auto& parameter : entry.declaration->parameters) {
+            if (const auto id = context_.declarations.symbol_for(parameter)) {
+                current_parameter_ids_.insert(id->value);
+            }
+        }
+
+        if (entry.declaration->body != nullptr) {
+            emit_body(*entry.declaration->body);
+        }
+        output_ << "}\n";
+        current_parameter_ids_.clear();
+        current_function_ = nullptr;
+    }
+
+    void emit_body(const Block& body)
     {
         for (const auto& item : body.items) {
             std::visit(
                 [this](const auto& node) {
                     using Node = std::decay_t<decltype(node)>;
-
                     if constexpr (std::is_same_v<Node, FunctionDeclaration>) {
                         report(
                             node.span,
-                            "C++ code generation does not support nested functions yet");
+                            "C++ code generation does not support nested "
+                            "functions yet");
                     } else {
                         emit_statement(node);
                     }
@@ -364,54 +621,38 @@ private:
         const ExpressionStatement& statement)
     {
         if (statement.expression == nullptr) {
-            report(span, "malformed AST: expression statement has no expression");
+            report(
+                span,
+                "malformed AST: expression statement has no expression");
             return;
         }
 
-        const auto* call =
-            std::get_if<CallExpression>(&statement.expression->node);
+        const auto* call = unwrap_call(*statement.expression);
         if (call == nullptr) {
             report(
                 statement.expression->span,
-                "C++ code generation only supports calls to builtin 'print' "
-                "as expression statements");
+                "C++ code generation only supports function calls as "
+                "expression statements");
             return;
         }
 
-        if (call->callee == nullptr) {
-            report(statement.expression->span, "malformed AST: call has no callee");
+        const auto target = resolve_call_target(*call, statement.expression->span);
+        if (!target.has_value()) {
+            return;
+        }
+        if (const auto* builtin =
+                std::get_if<BuiltinFunctionKind>(&*target);
+            builtin != nullptr && *builtin == BuiltinFunctionKind::print) {
+            emit_print_statement(*statement.expression, *call);
             return;
         }
 
-        const auto* callee =
-            std::get_if<IdentifierExpression>(&call->callee->node);
-        if (callee == nullptr || callee->name != "print") {
-            report(
-                call->callee->span,
-                "C++ code generation only supports calls to builtin 'print'");
-            return;
-        }
-
-        if (call->arguments.size() != 1) {
-            report(
-                statement.expression->span,
-                "builtin 'print' expects exactly one argument");
-            return;
-        }
-
-        if (call->arguments.front() == nullptr) {
-            report(
-                statement.expression->span,
-                "malformed AST: 'print' argument is missing");
-            return;
-        }
-
-        output_ << "    std::cout << std::boolalpha << ";
-        if (!emit_expression(*call->arguments.front())) {
+        output_ << "    ";
+        if (!emit_expression(*statement.expression)) {
             output_ << '\n';
             return;
         }
-        output_ << " << '\\n';\n";
+        output_ << ";\n";
     }
 
     void emit_statement_node(const SourceSpan span, const IfStatement&)
@@ -421,7 +662,9 @@ private:
 
     void emit_statement_node(const SourceSpan span, const WhileStatement&)
     {
-        report(span, "C++ code generation does not support while statements yet");
+        report(
+            span,
+            "C++ code generation does not support while statements yet");
     }
 
     void emit_statement_node(const SourceSpan span, const ForRangeStatement&)
@@ -442,26 +685,55 @@ private:
         const SourceSpan span,
         const ReturnStatement& statement)
     {
-        if (statement.value == nullptr) {
+        if (current_function_ == nullptr) {
             report(
                 span,
-                "C++ code generation requires a value in a 'main' return statement");
+                "malformed semantic state: return is outside a function");
+            return;
+        }
+        const auto* function = function_symbol(*current_function_);
+        if (function == nullptr) {
             return;
         }
 
-        if (!is_integer_return_expression(*statement.value)) {
+        if (statement.value == nullptr) {
+            if (function->return_type != context_.types.void_type()) {
+                report(
+                    span,
+                    current_function_->is_main
+                        ? "C++ code generation requires a value in a 'main' "
+                          "return statement"
+                        : "malformed semantic state: non-void return has no "
+                          "value");
+                return;
+            }
+            output_ << "    return;\n";
+            return;
+        }
+
+        if (function->return_type == context_.types.void_type()) {
             report(
                 statement.value->span,
-                "C++ code generation only supports integer arithmetic in 'main' return statements");
+                "malformed semantic state: void return has a value");
             return;
         }
 
-        output_ << "    return static_cast<int>(";
-        if (!emit_expression(*statement.value)) {
+        if (current_function_->is_main) {
+            output_ << "    return static_cast<int>(";
+            if (!emit_expression(*statement.value)) {
+                output_ << ");\n";
+                return;
+            }
             output_ << ");\n";
             return;
         }
-        output_ << ");\n";
+
+        output_ << "    return ";
+        if (!emit_expression(*statement.value)) {
+            output_ << ";\n";
+            return;
+        }
+        output_ << ";\n";
     }
 
     void emit_statement_node(const SourceSpan span, const BreakStatement&)
@@ -481,8 +753,142 @@ private:
         report(span, "C++ code generation does not support nested blocks yet");
     }
 
+    [[nodiscard]] const CallExpression* unwrap_call(
+        const Expression& expression) const
+    {
+        if (const auto* call = std::get_if<CallExpression>(&expression.node)) {
+            return call;
+        }
+        const auto* parenthesized =
+            std::get_if<ParenthesizedExpression>(&expression.node);
+        if (parenthesized == nullptr || parenthesized->expression == nullptr) {
+            return nullptr;
+        }
+        return unwrap_call(*parenthesized->expression);
+    }
+
+    [[nodiscard]] const IdentifierExpression* unwrap_callable_identifier(
+        const Expression& expression) const
+    {
+        if (const auto* identifier =
+                std::get_if<IdentifierExpression>(&expression.node)) {
+            return identifier;
+        }
+        const auto* parenthesized =
+            std::get_if<ParenthesizedExpression>(&expression.node);
+        if (parenthesized == nullptr || parenthesized->expression == nullptr) {
+            return nullptr;
+        }
+        return unwrap_callable_identifier(*parenthesized->expression);
+    }
+
+    [[nodiscard]] std::optional<ResolutionTarget> resolve_call_target(
+        const CallExpression& call,
+        const SourceSpan call_span)
+    {
+        if (call.callee == nullptr) {
+            report(call_span, "malformed AST: call has no callee");
+            return std::nullopt;
+        }
+        const auto* identifier = unwrap_callable_identifier(*call.callee);
+        if (identifier == nullptr) {
+            if (unwrap_member_access(*call.callee) != nullptr) {
+                report(
+                    call.callee->span,
+                    "C++ code generation does not support member access yet");
+                return std::nullopt;
+            }
+            report(
+                call.callee->span,
+                "C++ code generation only supports direct function calls "
+                "yet");
+            return std::nullopt;
+        }
+        const auto resolution = context_.resolutions.resolution_for(*identifier);
+        if (!resolution.has_value()) {
+            report(
+                call.callee->span,
+                "malformed semantic state: call callee has no resolution");
+            return std::nullopt;
+        }
+        return resolution;
+    }
+
+    [[nodiscard]] const MemberAccessExpression* unwrap_member_access(
+        const Expression& expression) const
+    {
+        if (const auto* member =
+                std::get_if<MemberAccessExpression>(&expression.node)) {
+            return member;
+        }
+        const auto* parenthesized =
+            std::get_if<ParenthesizedExpression>(&expression.node);
+        if (parenthesized == nullptr || parenthesized->expression == nullptr) {
+            return nullptr;
+        }
+        return unwrap_member_access(*parenthesized->expression);
+    }
+
+    void emit_print_statement(
+        const Expression& statement_expression,
+        const CallExpression& call)
+    {
+        if (!validate_expression_type(statement_expression)) {
+            return;
+        }
+        if (call.arguments.size() != 1) {
+            report(
+                statement_expression.span,
+                "malformed semantic state: builtin 'print' does not have "
+                "exactly one argument");
+            return;
+        }
+        if (call.arguments.front() == nullptr) {
+            report(
+                statement_expression.span,
+                "malformed AST: 'print' argument is missing");
+            return;
+        }
+
+        output_ << "    std::cout << std::boolalpha << ";
+        if (!emit_expression(*call.arguments.front())) {
+            output_ << '\n';
+            return;
+        }
+        output_ << " << '\\n';\n";
+    }
+
+    [[nodiscard]] bool validate_expression_type(const Expression& expression)
+    {
+        const auto type = context_.type_info.type_of(expression);
+        if (!type.has_value()) {
+            report(
+                expression.span,
+                "malformed semantic state: expression has no type");
+            return false;
+        }
+        const auto descriptor = context_.types.lookup(*type);
+        if (!descriptor.has_value()) {
+            report(
+                expression.span,
+                "malformed semantic state: expression has an unknown type");
+            return false;
+        }
+        if (std::holds_alternative<SemanticVectorType>(*descriptor)) {
+            report(
+                expression.span,
+                "C++ code generation does not support vector expressions "
+                "yet");
+            return false;
+        }
+        return true;
+    }
+
     [[nodiscard]] bool emit_expression(const Expression& expression)
     {
+        if (!validate_expression_type(expression)) {
+            return false;
+        }
         return std::visit(
             [this, &expression](const auto& node) {
                 return emit_expression_node(expression.span, node);
@@ -499,11 +905,11 @@ private:
             report(span, "malformed AST: invalid integer literal lexeme");
             return false;
         }
-
         if (exceeds_magnitude(*normalized, maximum_integer_magnitude)) {
             report(
                 span,
-                "integer literal is outside the supported signed 64-bit code-generation range");
+                "integer literal is outside the supported signed 64-bit "
+                "code-generation range");
             return false;
         }
 
@@ -543,12 +949,44 @@ private:
 
     [[nodiscard]] bool emit_expression_node(
         const SourceSpan span,
-        const IdentifierExpression&)
+        const IdentifierExpression& expression)
     {
-        report(
-            span,
-            "C++ code generation does not support identifier expressions yet");
-        return false;
+        const auto resolution =
+            context_.resolutions.resolution_for(expression);
+        if (!resolution.has_value()) {
+            report(
+                span,
+                "malformed semantic state: identifier has no resolution");
+            return false;
+        }
+        const auto* id = std::get_if<SymbolId>(&*resolution);
+        if (id == nullptr) {
+            report(
+                span,
+                "C++ code generation only supports parameter identifier "
+                "expressions yet");
+            return false;
+        }
+        const auto* entry = symbol(*id, span, "identifier reference");
+        if (entry == nullptr) {
+            return false;
+        }
+        if (!std::holds_alternative<ParameterSymbol>(entry->data)) {
+            report(
+                span,
+                "C++ code generation only supports references to parameters "
+                "yet");
+            return false;
+        }
+        if (!current_parameter_ids_.contains(id->value)) {
+            report(
+                span,
+                "malformed semantic state: parameter reference is outside "
+                "its function");
+            return false;
+        }
+        output_ << generated_name("tpp_parameter_", *id);
+        return true;
     }
 
     [[nodiscard]] bool emit_expression_node(
@@ -561,8 +999,7 @@ private:
         }
 
         if (expression.operator_kind == UnaryOperator::minus) {
-            const auto* integer =
-                unwrap_integer_literal(*expression.operand);
+            const auto* integer = unwrap_integer_literal(*expression.operand);
             if (integer != nullptr) {
                 const auto normalized =
                     normalize_integer_lexeme(integer->lexeme);
@@ -596,10 +1033,11 @@ private:
         const BinaryExpression& expression)
     {
         if (expression.left == nullptr || expression.right == nullptr) {
-            report(span, "malformed AST: binary expression is missing an operand");
+            report(
+                span,
+                "malformed AST: binary expression is missing an operand");
             return false;
         }
-
         const auto spelling = binary_operator_spelling(expression.operator_kind);
         if (!spelling.has_value()) {
             report(span, "malformed AST: unknown binary operator");
@@ -622,10 +1060,94 @@ private:
 
     [[nodiscard]] bool emit_expression_node(
         const SourceSpan span,
-        const CallExpression&)
+        const CallExpression& expression)
     {
-        report(span, "C++ code generation does not support nested calls yet");
-        return false;
+        const auto target = resolve_call_target(expression, span);
+        if (!target.has_value()) {
+            return false;
+        }
+
+        if (const auto* builtin =
+                std::get_if<BuiltinFunctionKind>(&*target)) {
+            if (*builtin == BuiltinFunctionKind::print) {
+                report(
+                    span,
+                    "C++ code generation only supports builtin 'print' as "
+                    "an expression statement");
+            } else {
+                report(
+                    expression.callee != nullptr
+                        ? expression.callee->span
+                        : span,
+                    "C++ code generation does not support builtin '"
+                        + std::string{builtin_name(*builtin)} + "' yet");
+            }
+            return false;
+        }
+
+        return emit_user_call(
+            span,
+            expression,
+            std::get<SymbolId>(*target));
+    }
+
+    [[nodiscard]] bool emit_user_call(
+        const SourceSpan span,
+        const CallExpression& call,
+        const SymbolId function_id)
+    {
+        const auto callee_span =
+            call.callee != nullptr ? call.callee->span : span;
+        const auto* entry = symbol(function_id, callee_span, "call callee");
+        if (entry == nullptr) {
+            return false;
+        }
+        const auto* function = std::get_if<FunctionSymbol>(&entry->data);
+        if (function == nullptr) {
+            report(
+                callee_span,
+                "malformed semantic state: resolved call target is not a "
+                "function");
+            return false;
+        }
+        if (main_symbol_.has_value() && function_id == *main_symbol_) {
+            report(
+                callee_span,
+                "C++ code generation cannot call 'main'");
+            return false;
+        }
+        if (!top_level_function_ids_.contains(function_id.value)) {
+            report(
+                callee_span,
+                "C++ code generation does not support calls to nested "
+                "functions yet");
+            return false;
+        }
+        if (call.arguments.size() != function->parameter_types.size()) {
+            report(
+                span,
+                "malformed semantic state: call arity does not match "
+                "resolved function");
+            return false;
+        }
+
+        output_ << generated_name("tpp_function_", function_id) << '(';
+        auto valid = true;
+        for (std::size_t index = 0; index < call.arguments.size(); ++index) {
+            if (index != 0) {
+                output_ << ", ";
+            }
+            if (call.arguments[index] == nullptr) {
+                report(span, "malformed AST: call argument is missing");
+                valid = false;
+                continue;
+            }
+            if (!emit_expression(*call.arguments[index])) {
+                valid = false;
+            }
+        }
+        output_ << ')';
+        return valid;
     }
 
     [[nodiscard]] bool emit_expression_node(
@@ -674,22 +1196,29 @@ private:
         return true;
     }
 
+    const CppGenerationContext& context_;
     DiagnosticEngine& diagnostics_;
     std::size_t initial_error_count_;
     std::ostringstream output_;
+    std::vector<FunctionEntry> functions_;
+    std::unordered_set<std::size_t> top_level_function_ids_;
+    std::optional<SymbolId> main_symbol_;
+    const FunctionEntry* current_function_{nullptr};
+    std::unordered_set<std::size_t> current_parameter_ids_;
 };
 
 }
 
 std::optional<std::string> generate_cpp(
     const Program& program,
+    const CppGenerationContext& context,
     DiagnosticEngine& diagnostics)
 {
     if (diagnostics.has_errors()) {
         return std::nullopt;
     }
 
-    return CppGenerator{diagnostics}.generate(program);
+    return CppGenerator{context, diagnostics}.generate(program);
 }
 
 }
