@@ -3,6 +3,7 @@
 #include "cli.hpp"
 
 #include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <sstream>
 #include <span>
@@ -44,6 +45,20 @@ Result invoke(const std::initializer_list<std::string_view> arguments)
 
     const auto exit_code = tpp::cli::run(args, out, err);
     return {exit_code, out.str(), err.str()};
+}
+
+std::string read_data_file(const std::string_view filename)
+{
+    const auto path = std::filesystem::path(TPP_TEST_DATA_DIR) / filename;
+    std::ifstream input{path, std::ios::binary};
+    if (!input) {
+        throw tpp::test::Failure{"cannot open test data file '"
+                                 + path.string() + "'"};
+    }
+
+    std::ostringstream contents;
+    contents << input.rdbuf();
+    return contents.str();
 }
 
 void no_arguments_is_a_usage_error()
@@ -381,6 +396,19 @@ void emit_cpp_accepts_the_flag_before_after_and_repeated()
     TPP_CHECK(repeated.stderr_text.empty());
 }
 
+void emit_cpp_generates_general_top_level_functions()
+{
+    const auto input =
+        std::filesystem::path(TPP_TEST_DATA_DIR) / "codegen_functions.tpp";
+    const auto result = invoke({"--emit-cpp", input.string()});
+
+    TPP_CHECK_EQ(result.exit_code, 0);
+    TPP_CHECK_EQ(
+        result.stdout_text,
+        read_data_file("codegen_functions.expected.cpp"));
+    TPP_CHECK(result.stderr_text.empty());
+}
+
 void output_modes_are_mutually_exclusive()
 {
     const auto input =
@@ -507,6 +535,8 @@ int main()
         {"emit C++ requires input", emit_cpp_requires_an_input_file},
         {"emit C++ option order and repetition",
          emit_cpp_accepts_the_flag_before_after_and_repeated},
+        {"emit C++ general top-level functions",
+         emit_cpp_generates_general_top_level_functions},
         {"output modes are mutually exclusive",
          output_modes_are_mutually_exclusive},
         {"emit C++ suppresses frontend errors",

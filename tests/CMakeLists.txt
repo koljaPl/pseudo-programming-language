@@ -247,6 +247,20 @@ tpp_add_cli_integration_test(
     ARGS --emit-cpp "${codegen_source}"
 )
 
+set(codegen_functions_source
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_functions.tpp"
+)
+set(codegen_functions_expected
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_functions.expected.cpp"
+)
+
+tpp_add_cli_integration_test(
+    emit_cpp_top_level_functions
+    EXIT_CODE 0
+    STDOUT_FILE "${codegen_functions_expected}"
+    ARGS --emit-cpp "${codegen_functions_source}"
+)
+
 tpp_add_cli_integration_test(
     conflicting_output_modes
     EXIT_CODE 2
@@ -507,16 +521,12 @@ tpp_add_cli_integration_test(
 find_program(TPP_GXX_EXECUTABLE NAMES g++)
 
 if(TPP_GXX_EXECUTABLE)
-    set(codegen_smoke_source
-        "${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_smoke.tpp"
-    )
-
     add_test(
         NAME codegen.smoke.gxx
         COMMAND
             "${CMAKE_COMMAND}"
             "-DCLI=$<TARGET_FILE:pseudo>"
-            "-DINPUT=${codegen_smoke_source}"
+            "-DINPUT=${codegen_functions_source}"
             "-DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/codegen-smoke.cpp"
             "-DCXX=${TPP_GXX_EXECUTABLE}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCodegenSmoke.cmake"
