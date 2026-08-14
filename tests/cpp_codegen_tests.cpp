@@ -5,6 +5,15 @@
 #include "pseudo/diagnostics/diagnostic_engine.hpp"
 #include "pseudo/lexer/lexer.hpp"
 #include "pseudo/parser/parser.hpp"
+#include "pseudo/semantic/control_flow_checker.hpp"
+#include "pseudo/semantic/declaration_collector.hpp"
+#include "pseudo/semantic/declaration_info.hpp"
+#include "pseudo/semantic/name_resolver.hpp"
+#include "pseudo/semantic/resolution_info.hpp"
+#include "pseudo/semantic/symbol_table.hpp"
+#include "pseudo/semantic/type_checker.hpp"
+#include "pseudo/semantic/type_context.hpp"
+#include "pseudo/semantic/type_info.hpp"
 #include "pseudo/source/source_manager.hpp"
 
 #include <array>
@@ -18,21 +27,64 @@
 
 namespace {
 
-class ParsedProgram {
+class CheckedProgram {
 public:
-    explicit ParsedProgram(std::string source)
+    explicit CheckedProgram(std::string source)
         : program_{tpp::SourceSpan{tpp::SourceId{0}, 0, 0}, {}}
     {
         const auto source_id = sources_.add_source(
             "codegen.tpp",
             std::move(source));
-        tpp::Lexer lexer{source_id, sources_, frontend_diagnostics_};
-        tokens_ = lexer.lex();
-        TPP_CHECK(!frontend_diagnostics_.has_errors());
 
-        tpp::Parser parser{tokens_, sources_, frontend_diagnostics_};
+        tpp::Lexer lexer{source_id, sources_, semantic_diagnostics_};
+        tokens_ = lexer.lex();
+        TPP_CHECK(!semantic_diagnostics_.has_errors());
+
+        tpp::Parser parser{tokens_, sources_, semantic_diagnostics_};
         program_ = parser.parse_program();
-        TPP_CHECK(!frontend_diagnostics_.has_errors());
+        TPP_CHECK(!semantic_diagnostics_.has_errors());
+
+        tpp::DeclarationCollector collector{
+            types_,
+            symbols_,
+            declarations_,
+            semantic_diagnostics_,
+        };
+        TPP_CHECK(collector.collect(program_));
+
+        tpp::NameResolver resolver{
+            symbols_,
+            declarations_,
+            resolutions_,
+            semantic_diagnostics_,
+        };
+        TPP_CHECK(resolver.resolve(program_));
+
+        tpp::TypeChecker type_checker{
+            types_,
+            symbols_,
+            declarations_,
+            resolutions_,
+            type_info_,
+            semantic_diagnostics_,
+        };
+        TPP_CHECK(type_checker.check(program_));
+
+        tpp::ControlFlowChecker control_flow_checker{
+            semantic_diagnostics_};
+        TPP_CHECK(control_flow_checker.check(program_));
+        TPP_CHECK(!semantic_diagnostics_.has_errors());
+    }
+
+    [[nodiscard]] tpp::CppGenerationContext context() const noexcept
+    {
+        return tpp::CppGenerationContext{
+            .types = types_,
+            .symbols = symbols_,
+            .declarations = declarations_,
+            .resolutions = resolutions_,
+            .type_info = type_info_,
+        };
     }
 
     [[nodiscard]] tpp::Program& program() noexcept
@@ -50,11 +102,41 @@ public:
         return sources_;
     }
 
+    [[nodiscard]] const tpp::TypeContext& types() const noexcept
+    {
+        return types_;
+    }
+
+    [[nodiscard]] const tpp::SymbolTable& symbols() const noexcept
+    {
+        return symbols_;
+    }
+
+    [[nodiscard]] const tpp::DeclarationInfo& declarations() const noexcept
+    {
+        return declarations_;
+    }
+
+    [[nodiscard]] const tpp::ResolutionInfo& resolutions() const noexcept
+    {
+        return resolutions_;
+    }
+
+    [[nodiscard]] const tpp::TypeInfo& type_info() const noexcept
+    {
+        return type_info_;
+    }
+
 private:
     tpp::SourceManager sources_;
-    tpp::DiagnosticEngine frontend_diagnostics_;
+    tpp::DiagnosticEngine semantic_diagnostics_;
     std::vector<tpp::Token> tokens_;
     tpp::Program program_;
+    tpp::TypeContext types_;
+    tpp::SymbolTable symbols_;
+    tpp::DeclarationInfo declarations_;
+    tpp::ResolutionInfo resolutions_;
+    tpp::TypeInfo type_info_;
 };
 
 template <typename Node, typename Variant>
@@ -67,7 +149,14 @@ Node& require_variant(Variant& variant)
 
 tpp::FunctionDeclaration& require_main(tpp::Program& program)
 {
-    TPP_CHECK_EQ(program.declarations.size(), std::size_t{1});
+    for (auto& declaration : program.declarations) {
+        auto* function = std::get_if<tpp::FunctionDeclaration>(&declaration);
+        if (function != nullptr && function->name == "main") {
+            return *function;
+        }
+    }
+
+    TPP_CHECK(false);
     return require_variant<tpp::FunctionDeclaration>(
         program.declarations.front());
 }
@@ -95,11 +184,19 @@ tpp::Expression& require_print_argument(tpp::BlockItem& item)
     return *call.arguments.front();
 }
 
+std::optional<std::string> generate(
+    const CheckedProgram& checked,
+    tpp::DiagnosticEngine& diagnostics)
+{
+    const auto context = checked.context();
+    return tpp::generate_cpp(checked.program(), context, diagnostics);
+}
+
 std::string generate_source(const std::string_view source)
 {
-    const ParsedProgram parsed{std::string{source}};
+    const CheckedProgram checked{std::string{source}};
     tpp::DiagnosticEngine diagnostics;
-    const auto generated = tpp::generate_cpp(parsed.program(), diagnostics);
+    const auto generated = generate(checked, diagnostics);
 
     TPP_CHECK(generated.has_value());
     TPP_CHECK(!diagnostics.has_errors());
@@ -107,9 +204,29 @@ std::string generate_source(const std::string_view source)
     return *generated;
 }
 
+void check_has_diagnostic(
+    const tpp::DiagnosticEngine& diagnostics,
+    const std::string_view text)
+{
+    std::string messages;
+    for (const auto& diagnostic : diagnostics.diagnostics()) {
+        if (diagnostic.message.find(text) != std::string::npos) {
+            return;
+        }
+        if (!messages.empty()) {
+            messages += '\n';
+        }
+        messages += diagnostic.message;
+    }
+
+    throw tpp::test::Failure{
+        "expected diagnostics to contain '" + std::string{text}
+        + "', got:\n" + messages};
+}
+
 void empty_main_has_stable_output()
 {
-    const ParsedProgram parsed{"int main() {}"};
+    const CheckedProgram checked{"int main() {}"};
     constexpr std::string_view expected =
         "#include <cstdint>\n"
         "#include <iostream>\n"
@@ -120,18 +237,16 @@ void empty_main_has_stable_output()
         "}\n";
 
     tpp::DiagnosticEngine first_diagnostics;
-    const auto first =
-        tpp::generate_cpp(parsed.program(), first_diagnostics);
+    const auto first = generate(checked, first_diagnostics);
     tpp::DiagnosticEngine second_diagnostics;
-    const auto second =
-        tpp::generate_cpp(parsed.program(), second_diagnostics);
+    const auto second = generate(checked, second_diagnostics);
 
     TPP_CHECK(first.has_value());
     TPP_CHECK(second.has_value());
     TPP_CHECK_EQ(*first, expected);
     TPP_CHECK_EQ(*second, expected);
     TPP_CHECK_EQ(*first, *second);
-    TPP_CHECK_EQ(parsed.program().declarations.size(), std::size_t{1});
+    TPP_CHECK_EQ(checked.program().declarations.size(), std::size_t{1});
 }
 
 void print_supports_all_literals_and_escapes_bytes()
@@ -236,86 +351,54 @@ void every_operator_has_a_stable_cpp_spelling()
 
 void return_uses_the_main_abi_and_supports_signed_minimum()
 {
-    constexpr std::string_view arithmetic_source =
-        "int main() { return 1 + 2 * 3; }";
-    constexpr std::string_view arithmetic_line =
-        "    return static_cast<int>((std::int64_t{1} + "
-        "(std::int64_t{2} * std::int64_t{3})));\n";
-    TPP_CHECK(
-        generate_source(arithmetic_source).find(arithmetic_line)
-        != std::string::npos);
+    const auto arithmetic = generate_source(
+        "int identity(int value) { return value; }"
+        "int main() { return identity(1 + 2 * 3); }");
+    tpp::test::check_contains(
+        arithmetic,
+        "return static_cast<int>(tpp_function_0((std::int64_t{1} + "
+        "(std::int64_t{2} * std::int64_t{3}))));");
 
-    constexpr std::string_view minimum_source =
-        "int main() { return -(09223372036854775808); }";
-    constexpr std::string_view minimum_line =
-        "    return static_cast<int>("
-        "(-std::int64_t{9223372036854775807} - std::int64_t{1}));\n";
-    TPP_CHECK(
-        generate_source(minimum_source).find(minimum_line)
-        != std::string::npos);
+    const auto minimum = generate_source(
+        "int main() { return -(09223372036854775808); }");
+    tpp::test::check_contains(
+        minimum,
+        "return static_cast<int>((-std::int64_t{9223372036854775807} "
+        "- std::int64_t{1}));");
 }
 
 void arbitrary_non_printable_bytes_use_fixed_octal_escapes()
 {
-    ParsedProgram parsed{"int main() { print(\"x\"); }"};
+    CheckedProgram checked{"int main() { print(\"x\"); }"};
     auto& argument = require_print_argument(
-        require_main(parsed.program()).body->items.front());
+        require_main(checked.program()).body->items.front());
     auto& literal =
         require_variant<tpp::StringLiteralExpression>(argument.node);
     literal.value = std::string{"\x01\xFF", 2};
 
     tpp::DiagnosticEngine diagnostics;
-    const auto generated = tpp::generate_cpp(parsed.program(), diagnostics);
+    const auto generated = generate(checked, diagnostics);
 
     TPP_CHECK(generated.has_value());
     TPP_CHECK(!diagnostics.has_errors());
-    TPP_CHECK(
-        generated->find("std::string{\"\\001\\377\", 2}")
-        != std::string::npos);
-}
-
-void out_of_range_integer_reports_its_exact_span()
-{
-    constexpr std::string_view source =
-        "int main() { print(9223372036854775809); }";
-    const ParsedProgram parsed{std::string{source}};
-    tpp::DiagnosticEngine diagnostics;
-
-    const auto generated = tpp::generate_cpp(parsed.program(), diagnostics);
-
-    TPP_CHECK(!generated.has_value());
-    TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{1});
-    const auto reported = diagnostics.diagnostics();
-    TPP_CHECK_EQ(
-        reported.front().message,
-        std::string{
-            "integer literal is outside the supported signed 64-bit "
-            "code-generation range"});
-    TPP_CHECK(reported.front().primary_span.has_value());
-    const auto span = *reported.front().primary_span;
-    TPP_CHECK_EQ(
-        parsed.sources().slice(span),
-        std::string_view{"9223372036854775809"});
-}
-
-void signed_integer_boundaries_are_checked_without_conversion()
-{
-    const auto maximum = generate_source(
-        "int main() { print(0009223372036854775807); }");
     tpp::test::check_contains(
-        maximum,
-        "std::int64_t{9223372036854775807}");
+        *generated,
+        "std::string{\"\\001\\377\", 2}");
+}
 
-    constexpr std::array<std::string_view, 2> unsupported_sources{
-        "int main() { print(+9223372036854775808); }",
-        "int main() { print(-9223372036854775809); }",
-    };
-
-    for (const auto source : unsupported_sources) {
-        const ParsedProgram parsed{std::string{source}};
+void integer_codegen_defensively_validates_mutated_lexemes()
+{
+    {
+        CheckedProgram checked{"int main() { print(0000000000000000001); }"};
+        auto& argument = require_print_argument(
+            require_main(checked.program()).body->items.front());
+        auto& literal =
+            require_variant<tpp::IntegerLiteralExpression>(argument.node);
+        literal.lexeme = "9223372036854775809";
+        const auto expected_span = argument.span;
         tpp::DiagnosticEngine diagnostics;
-        const auto generated =
-            tpp::generate_cpp(parsed.program(), diagnostics);
+
+        const auto generated = generate(checked, diagnostics);
 
         TPP_CHECK(!generated.has_value());
         TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{1});
@@ -324,200 +407,370 @@ void signed_integer_boundaries_are_checked_without_conversion()
             std::string{
                 "integer literal is outside the supported signed 64-bit "
                 "code-generation range"});
+        TPP_CHECK(diagnostics.diagnostics().front().primary_span.has_value());
+        const auto actual_span =
+            *diagnostics.diagnostics().front().primary_span;
+        TPP_CHECK_EQ(actual_span.source, expected_span.source);
+        TPP_CHECK_EQ(actual_span.begin, expected_span.begin);
+        TPP_CHECK_EQ(actual_span.end, expected_span.end);
     }
-}
 
-void malformed_integer_lexeme_is_diagnosed()
-{
-    ParsedProgram parsed{"int main() { print(1); }"};
-    auto& argument = require_print_argument(
-        require_main(parsed.program()).body->items.front());
-    auto& literal =
-        require_variant<tpp::IntegerLiteralExpression>(argument.node);
-    literal.lexeme = "12x";
-    tpp::DiagnosticEngine diagnostics;
-
-    const auto generated = tpp::generate_cpp(parsed.program(), diagnostics);
-
-    TPP_CHECK(!generated.has_value());
-    TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{1});
-    TPP_CHECK_EQ(
-        diagnostics.diagnostics().front().message,
-        std::string{"malformed AST: invalid integer literal lexeme"});
-}
-
-void unsupported_program_shapes_report_without_partial_output()
-{
-    constexpr std::string_view source =
-        "int global;"
-        "void helper() {}"
-        "int main() {}";
-    const ParsedProgram parsed{std::string{source}};
-    tpp::DiagnosticEngine diagnostics;
-
-    const auto generated = tpp::generate_cpp(parsed.program(), diagnostics);
-
-    TPP_CHECK(!generated.has_value());
-    TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{2});
-    TPP_CHECK_EQ(
-        diagnostics.diagnostics()[0].message,
-        std::string{
-            "C++ code generation does not support global variables yet"});
-    TPP_CHECK_EQ(
-        diagnostics.diagnostics()[1].message,
-        std::string{
-            "C++ code generation does not support top-level functions other "
-            "than 'main' yet"});
-}
-
-void unsupported_main_body_constructs_are_independent_errors()
-{
-    constexpr std::string_view source =
-        "int main() {"
-        "int value;"
-        "if true {}"
-        "other();"
-        "print();"
-        "print(1, 2);"
-        "print(value);"
-        "return true;"
-        "}";
-    const ParsedProgram parsed{std::string{source}};
-    tpp::DiagnosticEngine diagnostics;
-
-    const auto generated = tpp::generate_cpp(parsed.program(), diagnostics);
-
-    TPP_CHECK(!generated.has_value());
-    TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{7});
-    const auto reported = diagnostics.diagnostics();
-    TPP_CHECK_EQ(
-        reported[0].message,
-        std::string{
-            "C++ code generation does not support local variables yet"});
-    TPP_CHECK_EQ(
-        reported[2].message,
-        std::string{
-            "C++ code generation only supports calls to builtin 'print'"});
-    TPP_CHECK_EQ(
-        reported[3].message,
-        std::string{"builtin 'print' expects exactly one argument"});
-    TPP_CHECK_EQ(
-        reported[5].message,
-        std::string{
-            "C++ code generation does not support identifier expressions yet"});
-    TPP_CHECK_EQ(
-        reported[6].message,
-        std::string{
-            "C++ code generation only supports integer arithmetic in 'main' "
-            "return statements"});
-}
-
-void unsupported_recursive_expression_nodes_have_specific_diagnostics()
-{
-    struct Case {
-        std::string_view source;
-        std::string_view message;
-    };
-
-    constexpr std::array<Case, 4> cases{
-        Case{
-            "int main() { print(other()); }",
-            "C++ code generation does not support nested calls yet"},
-        Case{
-            "int main() { print(values[0]); }",
-            "C++ code generation does not support indexing yet"},
-        Case{
-            "int main() { print(value.member); }",
-            "C++ code generation does not support member access yet"},
-        Case{
-            "int main() { print(vector<int>(1)); }",
-            "C++ code generation does not support vector construction yet"},
-    };
-
-    for (const auto& test_case : cases) {
-        const ParsedProgram parsed{std::string{test_case.source}};
+    {
+        CheckedProgram checked{"int main() { print(1); }"};
+        auto& argument = require_print_argument(
+            require_main(checked.program()).body->items.front());
+        auto& literal =
+            require_variant<tpp::IntegerLiteralExpression>(argument.node);
+        literal.lexeme = "12x";
         tpp::DiagnosticEngine diagnostics;
-        const auto generated =
-            tpp::generate_cpp(parsed.program(), diagnostics);
 
-        TPP_CHECK(!generated.has_value());
+        TPP_CHECK(!generate(checked, diagnostics).has_value());
         TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{1});
         TPP_CHECK_EQ(
             diagnostics.diagnostics().front().message,
-            test_case.message);
+            std::string{"malformed AST: invalid integer literal lexeme"});
     }
 }
 
-void unsupported_diagnostics_use_the_nearest_expression_spans()
+void top_level_functions_have_stable_prototypes_and_definitions()
 {
-    const ParsedProgram parsed{
-        "int main() { print(value); print(1, 2); }"};
-    tpp::DiagnosticEngine diagnostics;
+    constexpr std::string_view source = R"(int add(int a, int b) {
+    return a + b;
+}
 
-    const auto generated = tpp::generate_cpp(parsed.program(), diagnostics);
+void greet(string name) {
+    print(name);
+}
 
-    TPP_CHECK(!generated.has_value());
-    TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{2});
-    const auto reported = diagnostics.diagnostics();
-    TPP_CHECK(reported[0].primary_span.has_value());
-    TPP_CHECK(reported[1].primary_span.has_value());
-    TPP_CHECK_EQ(
-        parsed.sources().slice(*reported[0].primary_span),
-        std::string_view{"value"});
-    TPP_CHECK_EQ(
-        parsed.sources().slice(*reported[1].primary_span),
-        std::string_view{"print(1, 2)"});
+int main() {
+    greet("sum");
+    print(add(2, 3));
+    return add(0, 0);
+}
+)";
+    constexpr std::string_view expected = R"(#include <cstdint>
+#include <iostream>
+#include <string>
+
+std::int64_t tpp_function_0(std::int64_t tpp_parameter_1, std::int64_t tpp_parameter_2);
+void tpp_function_3(std::string tpp_parameter_4);
+
+std::int64_t tpp_function_0(std::int64_t tpp_parameter_1, std::int64_t tpp_parameter_2)
+{
+    return (tpp_parameter_1 + tpp_parameter_2);
+}
+
+void tpp_function_3(std::string tpp_parameter_4)
+{
+    std::cout << std::boolalpha << tpp_parameter_4 << '\n';
+}
+
+int main()
+{
+    tpp_function_3(std::string{"sum", 3});
+    std::cout << std::boolalpha << tpp_function_0(std::int64_t{2}, std::int64_t{3}) << '\n';
+    return static_cast<int>(tpp_function_0(std::int64_t{0}, std::int64_t{0}));
+}
+)";
+
+    TPP_CHECK_EQ(generate_source(source), expected);
+}
+
+void all_scalar_parameter_and_return_types_are_supported()
+{
+    constexpr std::string_view source = R"(int identity_int(int value) {
+    return value;
+}
+bool identity_bool(bool value) {
+    return value;
+}
+char identity_char(char value) {
+    return value;
+}
+string identity_string(string value) {
+    return value;
+}
+void consume(string value) {
+    print(value);
+    return;
+}
+int main() {
+    print(identity_int(1));
+    print(identity_bool(true));
+    print(identity_char('x'));
+    consume(identity_string("ok"));
+    return 0;
+}
+)";
+
+    const auto output = generate_source(source);
+    tpp::test::check_contains(
+        output,
+        "std::int64_t tpp_function_0(std::int64_t tpp_parameter_1);");
+    tpp::test::check_contains(
+        output,
+        "bool tpp_function_2(bool tpp_parameter_3);");
+    tpp::test::check_contains(
+        output,
+        "char tpp_function_4(char tpp_parameter_5);");
+    tpp::test::check_contains(
+        output,
+        "std::string tpp_function_6(std::string tpp_parameter_7);");
+    tpp::test::check_contains(
+        output,
+        "void tpp_function_8(std::string tpp_parameter_9);");
+    tpp::test::check_contains(output, "int main()");
+    tpp::test::check_contains(output, "return tpp_parameter_7;");
+    tpp::test::check_contains(output, "return;\n");
+}
+
+void forward_calls_recursion_and_mutual_recursion_use_prototypes()
+{
+    constexpr std::string_view source = R"(int first(int value) {
+    return second(value);
+}
+int second(int value) {
+    return first(value);
+}
+int recurse(int value) {
+    return recurse(value);
+}
+int main() {
+    return first(0);
+}
+)";
+
+    const auto output = generate_source(source);
+    const auto first_prototype = output.find(
+        "std::int64_t tpp_function_0(std::int64_t tpp_parameter_1);");
+    const auto second_prototype = output.find(
+        "std::int64_t tpp_function_2(std::int64_t tpp_parameter_3);");
+    const auto recurse_prototype = output.find(
+        "std::int64_t tpp_function_4(std::int64_t tpp_parameter_5);");
+    const auto first_definition = output.find(
+        "std::int64_t tpp_function_0(std::int64_t tpp_parameter_1)\n{");
+
+    TPP_CHECK(first_prototype != std::string::npos);
+    TPP_CHECK(second_prototype != std::string::npos);
+    TPP_CHECK(recurse_prototype != std::string::npos);
+    TPP_CHECK(first_definition != std::string::npos);
+    TPP_CHECK(first_prototype < first_definition);
+    TPP_CHECK(second_prototype < first_definition);
+    TPP_CHECK(recurse_prototype < first_definition);
+    tpp::test::check_contains(
+        output,
+        "return tpp_function_2(tpp_parameter_1);");
+    tpp::test::check_contains(
+        output,
+        "return tpp_function_0(tpp_parameter_3);");
+    tpp::test::check_contains(
+        output,
+        "return tpp_function_4(tpp_parameter_5);");
+}
+
+void calls_work_in_statements_returns_print_and_nested_arguments()
+{
+    constexpr std::string_view source = R"(int identity(int value) {
+    return value;
+}
+void consume(int value) {
+    identity(value);
+    print(identity(value));
+}
+int main() {
+    consume(identity(1));
+    print(identity(identity(2)));
+    return identity(0);
+}
+)";
+
+    const auto output = generate_source(source);
+    tpp::test::check_contains(
+        output,
+        "    tpp_function_0(tpp_parameter_3);\n");
+    tpp::test::check_contains(
+        output,
+        "std::cout << std::boolalpha << "
+        "tpp_function_0(tpp_parameter_3) << '\\n';");
+    tpp::test::check_contains(
+        output,
+        "tpp_function_2(tpp_function_0(std::int64_t{1}));");
+    tpp::test::check_contains(
+        output,
+        "tpp_function_0(tpp_function_0(std::int64_t{2}))");
+    tpp::test::check_contains(
+        output,
+        "return static_cast<int>(tpp_function_0(std::int64_t{0}));");
+}
+
+void parenthesized_parameters_and_callees_preserve_structure()
+{
+    constexpr std::string_view source = R"(int identity(int value) {
+    return (value);
+}
+int main() {
+    print((identity)(1));
+    return (identity)(0);
+}
+)";
+
+    const auto output = generate_source(source);
+    tpp::test::check_contains(output, "return (tpp_parameter_1);");
+    tpp::test::check_contains(
+        output,
+        "std::cout << std::boolalpha << "
+        "tpp_function_0(std::int64_t{1}) << '\\n';");
+    tpp::test::check_contains(
+        output,
+        "return static_cast<int>(tpp_function_0(std::int64_t{0}));");
+}
+
+void generated_names_do_not_copy_cpp_keywords()
+{
+    constexpr std::string_view source = R"(int class(int template) {
+    return template;
+}
+int operator(int namespace) {
+    return class(namespace);
+}
+int main() {
+    return operator(0);
+}
+)";
+
+    const auto output = generate_source(source);
+    TPP_CHECK(output.find("class") == std::string::npos);
+    TPP_CHECK(output.find("template") == std::string::npos);
+    TPP_CHECK(output.find("operator") == std::string::npos);
+    TPP_CHECK(output.find("namespace") == std::string::npos);
+    tpp::test::check_contains(
+        output,
+        "std::int64_t tpp_function_0(std::int64_t tpp_parameter_1);");
+    tpp::test::check_contains(
+        output,
+        "return tpp_function_0(tpp_parameter_3);");
+}
+
+void user_function_named_print_shadows_the_builtin()
+{
+    constexpr std::string_view source = R"(int print(int value) {
+    return value;
+}
+int main() {
+    return print(1);
+}
+)";
+
+    const auto output = generate_source(source);
+    tpp::test::check_contains(
+        output,
+        "return static_cast<int>(tpp_function_0(std::int64_t{1}));");
+    TPP_CHECK(output.find("std::cout") == std::string::npos);
 }
 
 void missing_and_invalid_main_are_diagnosed()
 {
-    const ParsedProgram empty{""};
-    tpp::DiagnosticEngine empty_diagnostics;
-    TPP_CHECK(!tpp::generate_cpp(
-        empty.program(),
-        empty_diagnostics).has_value());
-    TPP_CHECK_EQ(empty_diagnostics.error_count(), std::size_t{1});
-    TPP_CHECK_EQ(
-        empty_diagnostics.diagnostics().front().message,
-        std::string{
-            "C++ code generation requires a top-level 'int main()' function"});
-    TPP_CHECK(
-        empty_diagnostics.diagnostics().front().primary_span.has_value());
-    const auto empty_span =
-        *empty_diagnostics.diagnostics().front().primary_span;
-    TPP_CHECK_EQ(empty_span.begin, std::size_t{0});
-    TPP_CHECK_EQ(empty_span.end, std::size_t{0});
+    {
+        const CheckedProgram empty{""};
+        tpp::DiagnosticEngine diagnostics;
+        TPP_CHECK(!generate(empty, diagnostics).has_value());
+        TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{1});
+        TPP_CHECK_EQ(
+            diagnostics.diagnostics().front().message,
+            std::string{
+                "C++ code generation requires a top-level 'int main()' "
+                "function"});
+    }
 
-    const ParsedProgram invalid{"void main(int argument) {}"};
-    tpp::DiagnosticEngine invalid_diagnostics;
-    TPP_CHECK(!tpp::generate_cpp(
-        invalid.program(),
-        invalid_diagnostics).has_value());
-    TPP_CHECK_EQ(invalid_diagnostics.error_count(), std::size_t{1});
-    const auto diagnostic = invalid_diagnostics.diagnostics().front();
-    TPP_CHECK(diagnostic.primary_span.has_value());
-    TPP_CHECK_EQ(
-        invalid.sources().slice(*diagnostic.primary_span),
-        std::string_view{"main"});
+    {
+        const CheckedProgram invalid{
+            "void main(int argument) { print(argument); }"};
+        tpp::DiagnosticEngine diagnostics;
+        TPP_CHECK(!generate(invalid, diagnostics).has_value());
+        TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{1});
+        TPP_CHECK_EQ(
+            diagnostics.diagnostics().front().message,
+            std::string{
+                "C++ code generation requires 'main' to have return type "
+                "'int' and no parameters"});
+        TPP_CHECK(diagnostics.diagnostics().front().primary_span.has_value());
+        TPP_CHECK_EQ(
+            invalid.sources().slice(
+                *diagnostics.diagnostics().front().primary_span),
+            std::string_view{"main"});
+    }
 
-    const ParsedProgram helper_only{"void helper() {}"};
-    tpp::DiagnosticEngine helper_diagnostics;
-    TPP_CHECK(!tpp::generate_cpp(
-        helper_only.program(),
-        helper_diagnostics).has_value());
-    TPP_CHECK_EQ(helper_diagnostics.error_count(), std::size_t{2});
-    TPP_CHECK_EQ(
-        helper_diagnostics.diagnostics()[1].message,
-        std::string{
-            "C++ code generation requires a top-level 'int main()' function"});
+    {
+        const CheckedProgram helper_only{"void helper() {}"};
+        tpp::DiagnosticEngine diagnostics;
+        TPP_CHECK(!generate(helper_only, diagnostics).has_value());
+        TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{1});
+        TPP_CHECK_EQ(
+            diagnostics.diagnostics().front().message,
+            std::string{
+                "C++ code generation requires a top-level 'int main()' "
+                "function"});
+    }
 }
 
-void duplicate_main_is_rejected()
+void calls_to_main_are_rejected_without_partial_output()
 {
-    const ParsedProgram parsed{"int main() {} int main() {}"};
+    const CheckedProgram checked{R"(int helper() {
+    return main();
+}
+int main() {
+    return 0;
+}
+)"};
     tpp::DiagnosticEngine diagnostics;
 
-    const auto generated = tpp::generate_cpp(parsed.program(), diagnostics);
+    const auto generated = generate(checked, diagnostics);
+
+    TPP_CHECK(!generated.has_value());
+    TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{1});
+    check_has_diagnostic(diagnostics, "cannot call 'main'");
+}
+
+void duplicate_main_is_rejected_before_emission()
+{
+    tpp::SourceManager sources;
+    tpp::DiagnosticEngine semantic_diagnostics;
+    const auto source = sources.add_source(
+        "duplicate-main.tpp",
+        "int main() {} int main() {}");
+    tpp::Lexer lexer{source, sources, semantic_diagnostics};
+    const auto tokens = lexer.lex();
+    TPP_CHECK(!semantic_diagnostics.has_errors());
+    tpp::Parser parser{tokens, sources, semantic_diagnostics};
+    auto program = parser.parse_program();
+    TPP_CHECK(!semantic_diagnostics.has_errors());
+
+    tpp::TypeContext types;
+    tpp::SymbolTable symbols;
+    tpp::DeclarationInfo declarations;
+    tpp::DeclarationCollector collector{
+        types,
+        symbols,
+        declarations,
+        semantic_diagnostics,
+    };
+    TPP_CHECK(!collector.collect(program));
+
+    const tpp::ResolutionInfo resolutions;
+    const tpp::TypeInfo type_info;
+    const auto context = tpp::CppGenerationContext{
+        .types = types,
+        .symbols = symbols,
+        .declarations = declarations,
+        .resolutions = resolutions,
+        .type_info = type_info,
+    };
+    tpp::DiagnosticEngine diagnostics;
+
+    const auto generated = tpp::generate_cpp(
+        program,
+        context,
+        diagnostics);
 
     TPP_CHECK(!generated.has_value());
     TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{1});
@@ -528,46 +781,150 @@ void duplicate_main_is_rejected()
             "function"});
 }
 
-void malformed_recursive_ast_reports_instead_of_crashing()
+void unsupported_program_shapes_report_without_partial_output()
 {
-    ParsedProgram parsed{"int main() { print(-1); }"};
-    auto& argument = require_print_argument(
-        require_main(parsed.program()).body->items.front());
-    const auto argument_span = argument.span;
-    auto& unary = require_variant<tpp::UnaryExpression>(argument.node);
-    unary.operand.reset();
+    struct Case {
+        std::string_view source;
+        std::string_view diagnostic;
+    };
 
-    tpp::DiagnosticEngine diagnostics;
-    const auto generated = tpp::generate_cpp(parsed.program(), diagnostics);
+    constexpr std::array<Case, 5> cases{
+        Case{
+            "int global = 1; int main() { return 0; }",
+            "global variables"},
+        Case{
+            "int helper() { int local = 1; return local; } "
+            "int main() { return helper(); }",
+            "local variables"},
+        Case{
+            "int outer() { int inner() { return 1; } return inner(); } "
+            "int main() { return outer(); }",
+            "nested functions"},
+        Case{
+            "vector<int> identity(vector<int> value) { return value; } "
+            "int main() { return 0; }",
+            "vector"},
+        Case{
+            "char first(string value) { return value[0]; } "
+            "int main() { return 0; }",
+            "indexing"},
+    };
 
-    TPP_CHECK(!generated.has_value());
-    TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{1});
-    TPP_CHECK_EQ(
-        diagnostics.diagnostics().front().message,
-        std::string{"malformed AST: unary expression has no operand"});
-    TPP_CHECK(diagnostics.diagnostics().front().primary_span.has_value());
-    const auto diagnostic_span =
-        *diagnostics.diagnostics().front().primary_span;
-    TPP_CHECK_EQ(diagnostic_span.source.value, argument_span.source.value);
-    TPP_CHECK_EQ(diagnostic_span.begin, argument_span.begin);
-    TPP_CHECK_EQ(diagnostic_span.end, argument_span.end);
+    for (const auto& test_case : cases) {
+        const CheckedProgram checked{std::string{test_case.source}};
+        tpp::DiagnosticEngine diagnostics;
+
+        const auto generated = generate(checked, diagnostics);
+
+        TPP_CHECK(!generated.has_value());
+        TPP_CHECK(diagnostics.has_errors());
+        check_has_diagnostic(diagnostics, test_case.diagnostic);
+        if (test_case.diagnostic == std::string_view{"nested functions"}) {
+            check_has_diagnostic(
+                diagnostics,
+                "calls to nested functions");
+        }
+    }
 }
 
-void other_missing_recursive_children_are_diagnosed()
+void unsupported_body_errors_are_collected_independently()
+{
+    const CheckedProgram checked{R"(int helper(int parameter) {
+    int local = parameter;
+    if true {}
+    while false {}
+    { print(parameter); }
+    return local;
+}
+int main() { return 0; }
+)"};
+    tpp::DiagnosticEngine diagnostics;
+
+    const auto generated = generate(checked, diagnostics);
+
+    TPP_CHECK(!generated.has_value());
+    TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{5});
+    check_has_diagnostic(diagnostics, "local variables");
+    check_has_diagnostic(diagnostics, "if statements");
+    check_has_diagnostic(diagnostics, "while statements");
+    check_has_diagnostic(diagnostics, "nested blocks");
+    check_has_diagnostic(diagnostics, "references to parameters");
+}
+
+void unsupported_builtins_and_members_are_resolved_semantically()
 {
     {
-        ParsedProgram parsed{"int main() { print(1 + 2); }"};
+        const CheckedProgram checked{R"(void use_builtins() {
+    read_int();
+    read_string();
+    read_char();
+    len("x");
+    substring("x", 0, 1);
+}
+int main() { return 0; }
+)"};
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!generate(checked, diagnostics).has_value());
+        TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{5});
+        for (const auto name : {
+                 "read_int",
+                 "read_string",
+                 "read_char",
+                 "len",
+                 "substring",
+             }) {
+            check_has_diagnostic(diagnostics, name);
+        }
+    }
+
+    {
+        const CheckedProgram checked{R"(int length(string value) {
+    return value.length();
+}
+int main() { return 0; }
+)"};
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!generate(checked, diagnostics).has_value());
+        check_has_diagnostic(diagnostics, "member access");
+    }
+}
+
+void malformed_ast_reports_instead_of_crashing()
+{
+    {
+        CheckedProgram checked{"int main() { print(-1); }"};
         auto& argument = require_print_argument(
-            require_main(parsed.program()).body->items.front());
+            require_main(checked.program()).body->items.front());
+        const auto argument_span = argument.span;
+        auto& unary = require_variant<tpp::UnaryExpression>(argument.node);
+        unary.operand.reset();
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!generate(checked, diagnostics).has_value());
+        TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{1});
+        TPP_CHECK_EQ(
+            diagnostics.diagnostics().front().message,
+            std::string{"malformed AST: unary expression has no operand"});
+        TPP_CHECK(diagnostics.diagnostics().front().primary_span.has_value());
+        const auto diagnostic_span =
+            *diagnostics.diagnostics().front().primary_span;
+        TPP_CHECK_EQ(diagnostic_span.source, argument_span.source);
+        TPP_CHECK_EQ(diagnostic_span.begin, argument_span.begin);
+        TPP_CHECK_EQ(diagnostic_span.end, argument_span.end);
+    }
+
+    {
+        CheckedProgram checked{"int main() { print(1 + 2); }"};
+        auto& argument = require_print_argument(
+            require_main(checked.program()).body->items.front());
         auto& binary =
             require_variant<tpp::BinaryExpression>(argument.node);
         binary.left.reset();
         tpp::DiagnosticEngine diagnostics;
 
-        TPP_CHECK(!tpp::generate_cpp(
-            parsed.program(),
-            diagnostics).has_value());
-        TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{1});
+        TPP_CHECK(!generate(checked, diagnostics).has_value());
         TPP_CHECK_EQ(
             diagnostics.diagnostics().front().message,
             std::string{
@@ -575,54 +932,84 @@ void other_missing_recursive_children_are_diagnosed()
     }
 
     {
-        ParsedProgram parsed{"int main() { print((1)); }"};
+        CheckedProgram checked{"int main() { print((1)); }"};
         auto& argument = require_print_argument(
-            require_main(parsed.program()).body->items.front());
+            require_main(checked.program()).body->items.front());
         auto& parenthesized =
             require_variant<tpp::ParenthesizedExpression>(argument.node);
         parenthesized.expression.reset();
         tpp::DiagnosticEngine diagnostics;
 
-        TPP_CHECK(!tpp::generate_cpp(
-            parsed.program(),
-            diagnostics).has_value());
-        TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{1});
+        TPP_CHECK(!generate(checked, diagnostics).has_value());
         TPP_CHECK_EQ(
             diagnostics.diagnostics().front().message,
             std::string{
                 "malformed AST: parenthesized expression has no expression"});
     }
+
+    {
+        CheckedProgram checked{"int main() { return 0; }"};
+        auto& main = require_main(checked.program());
+        auto& statement = require_statement(main.body->items.front());
+        auto& return_statement =
+            require_variant<tpp::ReturnStatement>(statement.node);
+        return_statement.value.reset();
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!generate(checked, diagnostics).has_value());
+        check_has_diagnostic(diagnostics, "requires a value");
+    }
+
+    {
+        CheckedProgram checked{"int main() {}"};
+        require_main(checked.program()).body.reset();
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!generate(checked, diagnostics).has_value());
+        TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{1});
+        check_has_diagnostic(diagnostics, "has no body");
+    }
 }
 
-void valueless_return_is_rejected()
+void malformed_semantic_context_is_diagnosed()
 {
-    const ParsedProgram parsed{"int main() { return; }"};
-    tpp::DiagnosticEngine diagnostics;
+    const CheckedProgram checked{"int main() { print(1); }"};
 
-    const auto generated = tpp::generate_cpp(parsed.program(), diagnostics);
+    {
+        const tpp::ResolutionInfo empty_resolutions;
+        const auto context = tpp::CppGenerationContext{
+            .types = checked.types(),
+            .symbols = checked.symbols(),
+            .declarations = checked.declarations(),
+            .resolutions = empty_resolutions,
+            .type_info = checked.type_info(),
+        };
+        tpp::DiagnosticEngine diagnostics;
 
-    TPP_CHECK(!generated.has_value());
-    TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{1});
-    TPP_CHECK_EQ(
-        diagnostics.diagnostics().front().message,
-        std::string{
-            "C++ code generation requires a value in a 'main' return "
-            "statement"});
-}
+        TPP_CHECK(!tpp::generate_cpp(
+            checked.program(),
+            context,
+            diagnostics).has_value());
+        check_has_diagnostic(diagnostics, "semantic state");
+    }
 
-void malformed_main_body_reports_instead_of_crashing()
-{
-    ParsedProgram parsed{"int main() {}"};
-    require_main(parsed.program()).body.reset();
-    tpp::DiagnosticEngine diagnostics;
+    {
+        const tpp::TypeInfo empty_types;
+        const auto context = tpp::CppGenerationContext{
+            .types = checked.types(),
+            .symbols = checked.symbols(),
+            .declarations = checked.declarations(),
+            .resolutions = checked.resolutions(),
+            .type_info = empty_types,
+        };
+        tpp::DiagnosticEngine diagnostics;
 
-    const auto generated = tpp::generate_cpp(parsed.program(), diagnostics);
-
-    TPP_CHECK(!generated.has_value());
-    TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{1});
-    TPP_CHECK_EQ(
-        diagnostics.diagnostics().front().message,
-        std::string{"malformed AST: 'main' function has no body"});
+        TPP_CHECK(!tpp::generate_cpp(
+            checked.program(),
+            context,
+            diagnostics).has_value());
+        check_has_diagnostic(diagnostics, "semantic state");
+    }
 }
 
 }
@@ -640,27 +1027,32 @@ int main()
          return_uses_the_main_abi_and_supports_signed_minimum},
         {"arbitrary bytes use octal escapes",
          arbitrary_non_printable_bytes_use_fixed_octal_escapes},
-        {"out-of-range integer span",
-         out_of_range_integer_reports_its_exact_span},
-        {"signed integer boundaries",
-         signed_integer_boundaries_are_checked_without_conversion},
-        {"malformed integer lexeme", malformed_integer_lexeme_is_diagnosed},
+        {"integer defensive validation",
+         integer_codegen_defensively_validates_mutated_lexemes},
+        {"stable prototypes and definitions",
+         top_level_functions_have_stable_prototypes_and_definitions},
+        {"all scalar signatures",
+         all_scalar_parameter_and_return_types_are_supported},
+        {"forward calls recursion and mutual recursion",
+         forward_calls_recursion_and_mutual_recursion_use_prototypes},
+        {"calls in every supported context",
+         calls_work_in_statements_returns_print_and_nested_arguments},
+        {"parenthesized references and calls",
+         parenthesized_parameters_and_callees_preserve_structure},
+        {"safe generated names", generated_names_do_not_copy_cpp_keywords},
+        {"user print shadows builtin",
+         user_function_named_print_shadows_the_builtin},
+        {"missing and invalid main", missing_and_invalid_main_are_diagnosed},
+        {"calls to main", calls_to_main_are_rejected_without_partial_output},
+        {"duplicate main", duplicate_main_is_rejected_before_emission},
         {"unsupported program shapes",
          unsupported_program_shapes_report_without_partial_output},
         {"independent unsupported body errors",
-         unsupported_main_body_constructs_are_independent_errors},
-        {"unsupported recursive expressions",
-         unsupported_recursive_expression_nodes_have_specific_diagnostics},
-        {"unsupported diagnostic spans",
-         unsupported_diagnostics_use_the_nearest_expression_spans},
-        {"missing and invalid main", missing_and_invalid_main_are_diagnosed},
-        {"duplicate main", duplicate_main_is_rejected},
-        {"malformed recursive AST",
-         malformed_recursive_ast_reports_instead_of_crashing},
-        {"other missing recursive children",
-         other_missing_recursive_children_are_diagnosed},
-        {"valueless return", valueless_return_is_rejected},
-        {"malformed main body",
-         malformed_main_body_reports_instead_of_crashing},
+         unsupported_body_errors_are_collected_independently},
+        {"unsupported builtins and members",
+         unsupported_builtins_and_members_are_resolved_semantically},
+        {"malformed AST", malformed_ast_reports_instead_of_crashing},
+        {"malformed semantic context",
+         malformed_semantic_context_is_diagnosed},
     });
 }
