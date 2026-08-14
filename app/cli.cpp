@@ -132,6 +132,13 @@ int run(
     if (succeeded && options.output_mode == OutputMode::cpp) {
         generated_cpp = generate_cpp(
             session.program().value(),
+            CppGenerationContext{
+                .types = session.types(),
+                .symbols = session.symbols(),
+                .declarations = session.declarations(),
+                .resolutions = session.resolutions(),
+                .type_info = session.type_info(),
+            },
             session.diagnostics());
         succeeded = generated_cpp.has_value()
             && !session.diagnostics().has_errors();
