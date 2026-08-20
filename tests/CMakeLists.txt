@@ -50,6 +50,11 @@ tpp_add_test(
 )
 
 tpp_add_test(
+    runtime_tests
+    runtime_tests.cpp
+)
+
+tpp_add_test(
     type_context_tests
     type_context_tests.cpp
 )
@@ -259,6 +264,20 @@ tpp_add_cli_integration_test(
     EXIT_CODE 0
     STDOUT_FILE "${codegen_functions_expected}"
     ARGS --emit-cpp "${codegen_functions_source}"
+)
+
+set(codegen_strings_source
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_strings.tpp"
+)
+set(codegen_strings_expected
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_strings.expected.cpp"
+)
+
+tpp_add_cli_integration_test(
+    emit_cpp_strings_and_chars
+    EXIT_CODE 0
+    STDOUT_FILE "${codegen_strings_expected}"
+    ARGS --emit-cpp "${codegen_strings_source}"
 )
 
 tpp_add_cli_integration_test(
@@ -530,5 +549,34 @@ if(TPP_GXX_EXECUTABLE)
             "-DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/codegen-smoke.cpp"
             "-DCXX=${TPP_GXX_EXECUTABLE}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCodegenSmoke.cmake"
+    )
+
+    add_test(
+        NAME codegen.execute.strings
+        COMMAND
+            "${CMAKE_COMMAND}"
+            "-DCLI=$<TARGET_FILE:pseudo>"
+            "-DINPUT=${codegen_strings_source}"
+            "-DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/codegen-strings.cpp"
+            "-DEXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/codegen-strings-exe"
+            "-DCXX=${TPP_GXX_EXECUTABLE}"
+            "-DRUNTIME_INCLUDE=${PROJECT_SOURCE_DIR}/runtime/include"
+            "-DEXPECTED_STDOUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_strings.expected.stdout"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCodegenExecution.cmake"
+    )
+
+    add_test(
+        NAME codegen.execute.string_input
+        COMMAND
+            "${CMAKE_COMMAND}"
+            "-DCLI=$<TARGET_FILE:pseudo>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_string_input.tpp"
+            "-DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/codegen-string-input.cpp"
+            "-DEXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/codegen-string-input-exe"
+            "-DCXX=${TPP_GXX_EXECUTABLE}"
+            "-DRUNTIME_INCLUDE=${PROJECT_SOURCE_DIR}/runtime/include"
+            "-DSTDIN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_string_input.stdin"
+            "-DEXPECTED_STDOUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_string_input.expected.stdout"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCodegenExecution.cmake"
     )
 endif()

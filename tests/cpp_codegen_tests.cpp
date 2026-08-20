@@ -18,6 +18,7 @@
 
 #include <array>
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -152,6 +153,22 @@ tpp::FunctionDeclaration& require_main(tpp::Program& program)
     for (auto& declaration : program.declarations) {
         auto* function = std::get_if<tpp::FunctionDeclaration>(&declaration);
         if (function != nullptr && function->name == "main") {
+            return *function;
+        }
+    }
+
+    TPP_CHECK(false);
+    return require_variant<tpp::FunctionDeclaration>(
+        program.declarations.front());
+}
+
+tpp::FunctionDeclaration& require_function(
+    tpp::Program& program,
+    const std::string_view name)
+{
+    for (auto& declaration : program.declarations) {
+        auto* function = std::get_if<tpp::FunctionDeclaration>(&declaration);
+        if (function != nullptr && function->name == name) {
             return *function;
         }
     }
@@ -668,6 +685,227 @@ int main() {
     TPP_CHECK(output.find("std::cout") == std::string::npos);
 }
 
+void string_operations_use_semantic_runtime_helpers()
+{
+    constexpr std::string_view source = R"(string edit(
+    string text,
+    char replacement,
+    int index
+) {
+    text[index] = replacement;
+    text += "!";
+    text.push(replacement);
+    return text;
+}
+
+void inspect(string text) {
+    print(text[0]);
+    print(len(text));
+    print(substring(text, 0, text.length()));
+    print(text + "x");
+    print(text == "x");
+    print(text != "x");
+    print(text < "x");
+    print(text <= "x");
+    print(text > "x");
+    print(text >= "x");
+}
+
+int main() {
+    inspect(edit("abc", 'z', 1));
+    return 0;
+}
+)";
+
+    const auto output = generate_source(source);
+    tpp::test::check_contains(output, "#include <pseudo/runtime.hpp>\n");
+    tpp::test::check_contains(
+        output,
+        "tpp::runtime::string_index(tpp_parameter_1, tpp_parameter_3) "
+        "= tpp_parameter_2;");
+    tpp::test::check_contains(
+        output,
+        "tpp_parameter_1 += std::string{\"!\", 1};");
+    tpp::test::check_contains(
+        output,
+        "tpp::runtime::string_push(tpp_parameter_1, tpp_parameter_2);");
+    tpp::test::check_contains(
+        output,
+        "tpp::runtime::string_index(tpp_parameter_5, std::int64_t{0})");
+    tpp::test::check_contains(
+        output,
+        "tpp::runtime::string_length(tpp_parameter_5)");
+    tpp::test::check_contains(
+        output,
+        "tpp::runtime::substring(tpp_parameter_5, std::int64_t{0}, "
+        "tpp::runtime::string_length(tpp_parameter_5))");
+    for (const auto spelling : {
+             " + std::string{\"x\", 1})",
+             " == std::string{\"x\", 1})",
+             " != std::string{\"x\", 1})",
+             " < std::string{\"x\", 1})",
+             " <= std::string{\"x\", 1})",
+             " > std::string{\"x\", 1})",
+             " >= std::string{\"x\", 1})",
+         }) {
+        tpp::test::check_contains(output, spelling);
+    }
+}
+
+void initialized_string_and_char_locals_are_supported()
+{
+    constexpr std::string_view source = R"(string build() {
+    string text = "ab";
+    char replacement = 'z';
+    replacement = 'y';
+    text = text + "!";
+    text[0] = replacement;
+    return text;
+}
+
+int main() {
+    print(build());
+    return 0;
+}
+)";
+
+    const auto output = generate_source(source);
+    tpp::test::check_contains(
+        output,
+        "std::string tpp_variable_1 = std::string{\"ab\", 2};");
+    tpp::test::check_contains(output, "char tpp_variable_2 = 'z';");
+    tpp::test::check_contains(output, "tpp_variable_2 = 'y';");
+    tpp::test::check_contains(
+        output,
+        "tpp_variable_1 = (tpp_variable_1 + std::string{\"!\", 1});");
+    tpp::test::check_contains(
+        output,
+        "tpp::runtime::string_index(tpp_variable_1, std::int64_t{0}) "
+        "= tpp_variable_2;");
+    tpp::test::check_contains(output, "return tpp_variable_1;");
+}
+
+void temporary_strings_support_indexing_and_length()
+{
+    constexpr std::string_view source = R"(string identity(string value) {
+    return value;
+}
+int main() {
+    print("abc"[1]);
+    print(identity("xyz")[2]);
+    print(("a" + "b").length());
+    print(identity("abcd").length());
+    return 0;
+}
+)";
+
+    const auto output = generate_source(source);
+    tpp::test::check_contains(
+        output,
+        "tpp::runtime::string_index(std::string{\"abc\", 3}, "
+        "std::int64_t{1})");
+    tpp::test::check_contains(
+        output,
+        "tpp::runtime::string_index(tpp_function_0("
+        "std::string{\"xyz\", 3}), std::int64_t{2})");
+    tpp::test::check_contains(
+        output,
+        "tpp::runtime::string_length(((std::string{\"a\", 1} + "
+        "std::string{\"b\", 1})))");
+    tpp::test::check_contains(
+        output,
+        "tpp::runtime::string_length(tpp_function_0("
+        "std::string{\"abcd\", 4}))");
+}
+
+void unsupported_local_shapes_have_no_partial_output()
+{
+    struct Case {
+        std::string_view source;
+        std::string_view diagnostic;
+    };
+
+    constexpr std::array<Case, 4> cases{
+        Case{
+            "int main() { string text; return 0; }",
+            "initialized local string or char"},
+        Case{
+            "int main() { char value; return 0; }",
+            "initialized local string or char"},
+        Case{
+            "int main() { int value = 1; return 0; }",
+            "local variables of type 'string' or 'char'"},
+        Case{
+            "int main() { bool value = true; return 0; }",
+            "local variables of type 'string' or 'char'"},
+    };
+
+    for (const auto& test_case : cases) {
+        const CheckedProgram checked{std::string{test_case.source}};
+        tpp::DiagnosticEngine diagnostics;
+
+        const auto generated = generate(checked, diagnostics);
+
+        TPP_CHECK(!generated.has_value());
+        TPP_CHECK(diagnostics.has_errors());
+        check_has_diagnostic(diagnostics, test_case.diagnostic);
+    }
+}
+
+void string_io_and_builtin_shadowing_use_resolutions()
+{
+    const auto builtins = generate_source(R"(string input_text() {
+    return read_string();
+}
+char input_char() {
+    return read_char();
+}
+int main() {
+    print(input_text());
+    print(input_char());
+    return 0;
+}
+)");
+    tpp::test::check_contains(
+        builtins,
+        "return tpp::runtime::read_string();");
+    tpp::test::check_contains(
+        builtins,
+        "return tpp::runtime::read_char();");
+
+    const auto shadowed = generate_source(R"(int len(string value) {
+    return 7;
+}
+string substring(string value, int left, int right) {
+    return value;
+}
+string read_string() {
+    return "shadow";
+}
+char read_char() {
+    return 's';
+}
+int main() {
+    print(len("x"));
+    print(substring("abc", 0, 1));
+    print(read_string());
+    print(read_char());
+    return 0;
+}
+)");
+    TPP_CHECK(
+        shadowed.find("tpp::runtime::len") == std::string::npos);
+    TPP_CHECK(
+        shadowed.find("tpp::runtime::substring") == std::string::npos);
+    TPP_CHECK(
+        shadowed.find("tpp::runtime::read_string") == std::string::npos);
+    TPP_CHECK(
+        shadowed.find("tpp::runtime::read_char") == std::string::npos);
+    tpp::test::check_contains(
+        shadowed,
+        "tpp_function_0(std::string{\"x\", 1})");
+}
+
 void missing_and_invalid_main_are_diagnosed()
 {
     {
@@ -788,7 +1026,7 @@ void unsupported_program_shapes_report_without_partial_output()
         std::string_view diagnostic;
     };
 
-    constexpr std::array<Case, 5> cases{
+    constexpr std::array<Case, 4> cases{
         Case{
             "int global = 1; int main() { return 0; }",
             "global variables"},
@@ -804,10 +1042,6 @@ void unsupported_program_shapes_report_without_partial_output()
             "vector<int> identity(vector<int> value) { return value; } "
             "int main() { return 0; }",
             "vector"},
-        Case{
-            "char first(string value) { return value[0]; } "
-            "int main() { return 0; }",
-            "indexing"},
     };
 
     for (const auto& test_case : cases) {
@@ -848,47 +1082,21 @@ int main() { return 0; }
     check_has_diagnostic(diagnostics, "if statements");
     check_has_diagnostic(diagnostics, "while statements");
     check_has_diagnostic(diagnostics, "nested blocks");
-    check_has_diagnostic(diagnostics, "references to parameters");
+    check_has_diagnostic(diagnostics, "references to local");
 }
 
-void unsupported_builtins_and_members_are_resolved_semantically()
+void remaining_unsupported_builtin_is_resolved_semantically()
 {
-    {
-        const CheckedProgram checked{R"(void use_builtins() {
+    const CheckedProgram checked{R"(void use_builtin() {
     read_int();
-    read_string();
-    read_char();
-    len("x");
-    substring("x", 0, 1);
 }
 int main() { return 0; }
 )"};
-        tpp::DiagnosticEngine diagnostics;
+    tpp::DiagnosticEngine diagnostics;
 
-        TPP_CHECK(!generate(checked, diagnostics).has_value());
-        TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{5});
-        for (const auto name : {
-                 "read_int",
-                 "read_string",
-                 "read_char",
-                 "len",
-                 "substring",
-             }) {
-            check_has_diagnostic(diagnostics, name);
-        }
-    }
-
-    {
-        const CheckedProgram checked{R"(int length(string value) {
-    return value.length();
-}
-int main() { return 0; }
-)"};
-        tpp::DiagnosticEngine diagnostics;
-
-        TPP_CHECK(!generate(checked, diagnostics).has_value());
-        check_has_diagnostic(diagnostics, "member access");
-    }
+    TPP_CHECK(!generate(checked, diagnostics).has_value());
+    TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{1});
+    check_has_diagnostic(diagnostics, "read_int");
 }
 
 void malformed_ast_reports_instead_of_crashing()
@@ -969,6 +1177,61 @@ void malformed_ast_reports_instead_of_crashing()
         TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{1});
         check_has_diagnostic(diagnostics, "has no body");
     }
+
+    {
+        CheckedProgram checked{
+            "char first(string text) { return text[0]; }"
+            "int main() { return 0; }"};
+        auto& function = require_function(checked.program(), "first");
+        auto& statement = require_statement(function.body->items.front());
+        auto& return_statement =
+            require_variant<tpp::ReturnStatement>(statement.node);
+        TPP_CHECK(return_statement.value != nullptr);
+        auto& index = require_variant<tpp::IndexExpression>(
+            return_statement.value->node);
+        index.base.reset();
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!generate(checked, diagnostics).has_value());
+        check_has_diagnostic(diagnostics, "malformed AST");
+    }
+
+    {
+        CheckedProgram checked{
+            "string replace(string text, string other) {"
+            "text = other; return text; }"
+            "int main() { return 0; }"};
+        auto& function = require_function(checked.program(), "replace");
+        auto& statement = require_statement(function.body->items.front());
+        auto& assignment =
+            require_variant<tpp::AssignmentStatement>(statement.node);
+        assignment.value.reset();
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!generate(checked, diagnostics).has_value());
+        check_has_diagnostic(diagnostics, "malformed AST");
+    }
+
+    {
+        CheckedProgram checked{
+            "int length(string text) { return text.length(); }"
+            "int main() { return 0; }"};
+        auto& function = require_function(checked.program(), "length");
+        auto& statement = require_statement(function.body->items.front());
+        auto& return_statement =
+            require_variant<tpp::ReturnStatement>(statement.node);
+        TPP_CHECK(return_statement.value != nullptr);
+        auto& call = require_variant<tpp::CallExpression>(
+            return_statement.value->node);
+        TPP_CHECK(call.callee != nullptr);
+        auto& member = require_variant<tpp::MemberAccessExpression>(
+            call.callee->node);
+        member.base.reset();
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!generate(checked, diagnostics).has_value());
+        check_has_diagnostic(diagnostics, "malformed AST");
+    }
 }
 
 void malformed_semantic_context_is_diagnosed()
@@ -1010,6 +1273,126 @@ void malformed_semantic_context_is_diagnosed()
             diagnostics).has_value());
         check_has_diagnostic(diagnostics, "semantic state");
     }
+
+    {
+        CheckedProgram argument_checked{R"(string combine(string text, char suffix) {
+    return text;
+}
+int main() {
+    print(combine("x", 'y'));
+    return 0;
+}
+)"};
+        auto& argument = require_print_argument(
+            require_main(argument_checked.program()).body->items.front());
+        auto& call = require_variant<tpp::CallExpression>(argument.node);
+        TPP_CHECK_EQ(call.arguments.size(), std::size_t{2});
+        std::swap(call.arguments[0], call.arguments[1]);
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!generate(argument_checked, diagnostics).has_value());
+        check_has_diagnostic(
+            diagnostics,
+            "call argument type does not match resolved function");
+    }
+
+    {
+        CheckedProgram result_checked{R"(string text() {
+    return "x";
+}
+char character() {
+    return 'y';
+}
+int main() {
+    print(text());
+    print(character());
+    return 0;
+}
+)"};
+        auto& body = *require_main(result_checked.program()).body;
+        auto& text_call = require_print_argument(body.items[0]);
+        auto& character_call = require_print_argument(body.items[1]);
+        std::swap(text_call.node, character_call.node);
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!generate(result_checked, diagnostics).has_value());
+        check_has_diagnostic(
+            diagnostics,
+            "call result type does not match resolved function");
+    }
+}
+
+void string_semantic_identity_is_required()
+{
+    {
+        const CheckedProgram checked{
+            "int main() { print(len(\"x\")); return 0; }"};
+        const tpp::ResolutionInfo empty_resolutions;
+        const auto context = tpp::CppGenerationContext{
+            .types = checked.types(),
+            .symbols = checked.symbols(),
+            .declarations = checked.declarations(),
+            .resolutions = empty_resolutions,
+            .type_info = checked.type_info(),
+        };
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!tpp::generate_cpp(
+            checked.program(),
+            context,
+            diagnostics).has_value());
+        check_has_diagnostic(diagnostics, "callee has no resolution");
+    }
+
+    {
+        const CheckedProgram checked{
+            "char first(string text) { return text[0]; }"
+            "int main() { return 0; }"};
+        const tpp::TypeInfo empty_types;
+        const auto context = tpp::CppGenerationContext{
+            .types = checked.types(),
+            .symbols = checked.symbols(),
+            .declarations = checked.declarations(),
+            .resolutions = checked.resolutions(),
+            .type_info = empty_types,
+        };
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!tpp::generate_cpp(
+            checked.program(),
+            context,
+            diagnostics).has_value());
+        check_has_diagnostic(diagnostics, "expression has no type");
+    }
+
+    {
+        CheckedProgram checked{
+            "int length(string text) { return text.length(); }"
+            "int main() { return 0; }"};
+        auto& function = require_function(checked.program(), "length");
+        auto& statement = require_statement(function.body->items.front());
+        auto& return_statement =
+            require_variant<tpp::ReturnStatement>(statement.node);
+        TPP_CHECK(return_statement.value != nullptr);
+        auto& call = require_variant<tpp::CallExpression>(
+            return_statement.value->node);
+        TPP_CHECK(call.callee != nullptr);
+        auto& old_member = require_variant<tpp::MemberAccessExpression>(
+            call.callee->node);
+        auto receiver = std::move(old_member.base);
+        const auto callee_span = call.callee->span;
+        call.callee = std::make_unique<tpp::Expression>(tpp::Expression{
+            callee_span,
+            tpp::MemberAccessExpression{
+                std::move(receiver),
+                "length",
+            },
+        });
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!generate(checked, diagnostics).has_value());
+        check_has_diagnostic(diagnostics, "has no semantic identity");
+    }
 }
 
 }
@@ -1042,6 +1425,16 @@ int main()
         {"safe generated names", generated_names_do_not_copy_cpp_keywords},
         {"user print shadows builtin",
          user_function_named_print_shadows_the_builtin},
+        {"string operations use semantic runtime helpers",
+         string_operations_use_semantic_runtime_helpers},
+        {"initialized string and char locals",
+         initialized_string_and_char_locals_are_supported},
+        {"temporary strings support indexing and length",
+         temporary_strings_support_indexing_and_length},
+        {"unsupported local shapes",
+         unsupported_local_shapes_have_no_partial_output},
+        {"string IO and builtin shadowing",
+         string_io_and_builtin_shadowing_use_resolutions},
         {"missing and invalid main", missing_and_invalid_main_are_diagnosed},
         {"calls to main", calls_to_main_are_rejected_without_partial_output},
         {"duplicate main", duplicate_main_is_rejected_before_emission},
@@ -1049,10 +1442,12 @@ int main()
          unsupported_program_shapes_report_without_partial_output},
         {"independent unsupported body errors",
          unsupported_body_errors_are_collected_independently},
-        {"unsupported builtins and members",
-         unsupported_builtins_and_members_are_resolved_semantically},
+        {"remaining unsupported builtin",
+         remaining_unsupported_builtin_is_resolved_semantically},
         {"malformed AST", malformed_ast_reports_instead_of_crashing},
         {"malformed semantic context",
          malformed_semantic_context_is_diagnosed},
+        {"string semantic identity",
+         string_semantic_identity_is_required},
     });
 }
