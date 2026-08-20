@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace tpp::runtime {
 namespace detail {
@@ -30,6 +31,43 @@ inline std::size_t checked_string_index(
     const auto position = static_cast<std::size_t>(index);
     if (position >= value.size()) {
         throw std::out_of_range{"string index out of range"};
+    }
+
+    return position;
+}
+
+template <typename T>
+typename std::vector<T>::size_type checked_vector_size(
+    const std::int64_t size)
+{
+    using SizeType = typename std::vector<T>::size_type;
+
+    if (!std::in_range<SizeType>(size)) {
+        throw std::length_error{"vector size out of range"};
+    }
+
+    const auto count = static_cast<SizeType>(size);
+    if (count > std::vector<T>{}.max_size()) {
+        throw std::length_error{"vector size out of range"};
+    }
+
+    return count;
+}
+
+template <typename T>
+typename std::vector<T>::size_type checked_vector_index(
+    const std::vector<T>& value,
+    const std::int64_t index)
+{
+    using SizeType = typename std::vector<T>::size_type;
+
+    if (!std::in_range<SizeType>(index)) {
+        throw std::out_of_range{"vector index out of range"};
+    }
+
+    const auto position = static_cast<SizeType>(index);
+    if (position >= value.size()) {
+        throw std::out_of_range{"vector index out of range"};
     }
 
     return position;
@@ -79,6 +117,38 @@ inline std::string substring(
 inline void string_push(std::string& value, const char character)
 {
     value.push_back(character);
+}
+
+template <typename T>
+std::vector<T> make_vector(const std::int64_t size)
+{
+    return std::vector<T>(detail::checked_vector_size<T>(size));
+}
+
+template <typename T>
+std::vector<T> make_vector(
+    const std::int64_t size,
+    const T& initial_value)
+{
+    return std::vector<T>(
+        detail::checked_vector_size<T>(size),
+        initial_value);
+}
+
+template <typename T>
+typename std::vector<T>::const_reference vector_index(
+    const std::vector<T>& value,
+    const std::int64_t index)
+{
+    return value[detail::checked_vector_index(value, index)];
+}
+
+template <typename T>
+typename std::vector<T>::reference vector_index(
+    std::vector<T>& value,
+    const std::int64_t index)
+{
+    return value[detail::checked_vector_index(value, index)];
 }
 
 inline std::string read_string()
