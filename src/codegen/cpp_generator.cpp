@@ -143,6 +143,27 @@ constexpr std::string_view minimum_integer_magnitude =
     return std::nullopt;
 }
 
+[[nodiscard]] std::optional<std::string_view> assignment_operator_spelling(
+    const AssignmentOperator operator_kind) noexcept
+{
+    switch (operator_kind) {
+    case AssignmentOperator::assign:
+        return "=";
+    case AssignmentOperator::add_assign:
+        return "+=";
+    case AssignmentOperator::subtract_assign:
+        return "-=";
+    case AssignmentOperator::multiply_assign:
+        return "*=";
+    case AssignmentOperator::divide_assign:
+        return "/=";
+    case AssignmentOperator::remainder_assign:
+        return "%=";
+    }
+
+    return std::nullopt;
+}
+
 [[nodiscard]] const IntegerLiteralExpression* unwrap_integer_literal(
     const Expression& expression)
 {
@@ -240,6 +261,9 @@ public:
             << "#include <cstdint>\n"
                "#include <iostream>\n"
                "#include <string>\n";
+        if (uses_vector_) {
+            generated << "#include <vector>\n";
+        }
         if (uses_runtime_) {
             generated << "#include <pseudo/runtime.hpp>\n";
         }
@@ -313,7 +337,8 @@ private:
                 report(
                     span,
                     "C++ code generation only supports references to local "
-                    "string or char variables in the current function yet");
+                    "string, char, or vector variables in the current "
+                    "function yet");
                 return std::nullopt;
             }
             if (!variable->type.has_value()) {
@@ -335,7 +360,7 @@ private:
         return std::nullopt;
     }
 
-    [[nodiscard]] std::optional<std::string_view> cpp_type(
+    [[nodiscard]] std::optional<std::string> cpp_type(
         const TypeId type,
         const SourceSpan span,
         const std::string_view role)
@@ -349,29 +374,107 @@ private:
             return std::nullopt;
         }
 
-        if (std::holds_alternative<SemanticVectorType>(*descriptor)) {
-            report(
-                span,
-                "C++ code generation does not support vector types in "
-                "function signatures yet");
-            return std::nullopt;
+        if (const auto* vector =
+                std::get_if<SemanticVectorType>(&*descriptor)) {
+            const auto element = cpp_type(vector->element_type, span, role);
+            if (!element.has_value() || *element == "void") {
+                if (element.has_value()) {
+                    report(
+                        span,
+                        "malformed semantic state: vector element has type "
+                        "'void'");
+                }
+                return std::nullopt;
+            }
+            uses_vector_ = true;
+            return "std::vector<" + *element + ">";
         }
 
         switch (std::get<PrimitiveTypeKind>(*descriptor)) {
         case PrimitiveTypeKind::integer:
-            return "std::int64_t";
+            return std::string{"std::int64_t"};
         case PrimitiveTypeKind::boolean:
-            return "bool";
+            return std::string{"bool"};
         case PrimitiveTypeKind::character:
-            return "char";
+            return std::string{"char"};
         case PrimitiveTypeKind::string:
-            return "std::string";
+            return std::string{"std::string"};
         case PrimitiveTypeKind::void_type:
-            return "void";
+            return std::string{"void"};
         }
 
         report(span, "malformed semantic state: unknown primitive type");
         return std::nullopt;
+    }
+
+    [[nodiscard]] bool is_vector_type(const TypeId type) const noexcept
+    {
+        const auto descriptor = context_.types.lookup(type);
+        return descriptor.has_value()
+            && std::holds_alternative<SemanticVectorType>(*descriptor);
+    }
+
+    [[nodiscard]] bool is_supported_local_type(const TypeId type) const noexcept
+    {
+        return type == context_.types.string_type()
+            || type == context_.types.character_type()
+            || is_vector_type(type);
+    }
+
+    [[nodiscard]] std::optional<TypeId> scalar_type(
+        const ScalarTypeKind kind) const noexcept
+    {
+        switch (kind) {
+        case ScalarTypeKind::integer:
+            return context_.types.integer_type();
+        case ScalarTypeKind::boolean:
+            return context_.types.boolean_type();
+        case ScalarTypeKind::character:
+            return context_.types.character_type();
+        case ScalarTypeKind::string:
+            return context_.types.string_type();
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] bool syntax_type_matches(
+        const ValueType& syntax,
+        const TypeId semantic) const noexcept
+    {
+        return std::visit(
+            [this, semantic](const auto& node) {
+                using Node = std::decay_t<decltype(node)>;
+                if constexpr (std::is_same_v<Node, ScalarTypeKind>) {
+                    const auto type = scalar_type(node);
+                    return type.has_value() && *type == semantic;
+                } else {
+                    const auto descriptor = context_.types.lookup(semantic);
+                    const auto* vector = descriptor.has_value()
+                        ? std::get_if<SemanticVectorType>(&*descriptor)
+                        : nullptr;
+                    return vector != nullptr && node.element_type != nullptr
+                        && syntax_type_matches(
+                            *node.element_type,
+                            vector->element_type);
+                }
+            },
+            syntax.node);
+    }
+
+    [[nodiscard]] bool syntax_return_type_matches(
+        const ReturnType& syntax,
+        const TypeId semantic) const noexcept
+    {
+        return std::visit(
+            [this, semantic](const auto& node) {
+                using Node = std::decay_t<decltype(node)>;
+                if constexpr (std::is_same_v<Node, VoidType>) {
+                    return semantic == context_.types.void_type();
+                } else {
+                    return syntax_type_matches(node, semantic);
+                }
+            },
+            syntax.node);
     }
 
     [[nodiscard]] std::optional<TypeId> semantic_primitive_type(
@@ -495,6 +598,14 @@ private:
                 "not a function");
             return;
         }
+        if (!syntax_return_type_matches(
+                declaration.return_type,
+                function->return_type)) {
+            report(
+                declaration.return_type.span,
+                "malformed semantic state: function return type does not "
+                "match its declaration");
+        }
 
         top_level_function_ids_.insert(function_id->value);
         functions_.push_back(FunctionEntry{
@@ -578,6 +689,13 @@ private:
                 parameter.name_span,
                 "malformed semantic state: parameter type does not match "
                 "function signature");
+            return;
+        }
+        if (!syntax_type_matches(parameter.type, signature_type)) {
+            report(
+                parameter.type.span,
+                "malformed semantic state: parameter semantic type does not "
+                "match its declaration");
             return;
         }
 
@@ -731,19 +849,25 @@ private:
                 "type");
             return;
         }
-        if (*variable->type != context_.types.string_type()
-            && *variable->type != context_.types.character_type()) {
+        if (!syntax_type_matches(declaration.type, *variable->type)) {
+            report(
+                declaration.type.span,
+                "malformed semantic state: local variable semantic type does "
+                "not match its declaration");
+            return;
+        }
+        if (!is_supported_local_type(*variable->type)) {
             report(
                 declaration.type.span,
                 "C++ code generation only supports local variables of type "
-                "'string' or 'char' yet");
+                "'string', 'char', or 'vector<T>' yet");
             return;
         }
         if (declaration.initializer == nullptr) {
             report(
                 span,
-                "C++ code generation only supports initialized local string "
-                "or char variables yet");
+                "C++ code generation only supports initialized local string, "
+                "char, or vector variables yet");
             return;
         }
 
@@ -764,18 +888,122 @@ private:
             return;
         }
 
-        output_ << "    "
-                << (*variable->type == context_.types.string_type()
-                        ? "std::string"
-                        : "char")
-                << ' ' << generated_name("tpp_variable_", *declaration_id)
-                << " = ";
+        const auto variable_type = cpp_type(
+            *variable->type,
+            declaration.type.span,
+            "local variable");
+        if (!variable_type.has_value()) {
+            return;
+        }
+
+        output_ << "    " << *variable_type << ' '
+                << generated_name("tpp_variable_", *declaration_id) << " = ";
         if (!emit_expression(*declaration.initializer)) {
             output_ << ";\n";
             return;
         }
         output_ << ";\n";
         current_variable_ids_.insert(declaration_id->value);
+    }
+
+    [[nodiscard]] std::optional<std::vector<TypeId>>
+    validate_assignment_indices(
+        const AssignmentTarget& target,
+        const TypeId storage_type,
+        const TypeId recorded_target_type)
+    {
+        auto current_type = storage_type;
+        std::vector<TypeId> container_types;
+        container_types.reserve(target.indices.size());
+
+        for (const auto& index : target.indices) {
+            if (index == nullptr) {
+                report(
+                    target.span,
+                    "malformed AST: assignment target index is missing");
+                return std::nullopt;
+            }
+            const auto index_type = context_.type_info.type_of(*index);
+            if (!index_type.has_value()
+                || *index_type != context_.types.integer_type()) {
+                report(
+                    index->span,
+                    "malformed semantic state: assignment target index does "
+                    "not have type 'int'");
+                return std::nullopt;
+            }
+
+            container_types.push_back(current_type);
+            if (current_type == context_.types.string_type()) {
+                current_type = context_.types.character_type();
+                continue;
+            }
+
+            const auto descriptor = context_.types.lookup(current_type);
+            const auto* vector = descriptor.has_value()
+                ? std::get_if<SemanticVectorType>(&*descriptor)
+                : nullptr;
+            if (vector == nullptr) {
+                report(
+                    target.span,
+                    "malformed semantic state: assignment target indexes a "
+                    "non-indexable type");
+                return std::nullopt;
+            }
+            current_type = vector->element_type;
+        }
+
+        if (current_type != recorded_target_type) {
+            report(
+                target.span,
+                "malformed semantic state: assignment target type does not "
+                "match its indexed symbol type");
+            return std::nullopt;
+        }
+        return container_types;
+    }
+
+    [[nodiscard]] bool emit_assignment_target(
+        const AssignmentTarget& target,
+        const StorageReference& storage,
+        const std::vector<TypeId>& container_types,
+        const std::size_t depth)
+    {
+        if (depth == 0) {
+            output_ << storage.generated_name;
+            return true;
+        }
+
+        const auto container_type = container_types[depth - 1];
+        if (container_type == context_.types.string_type()) {
+            output_ << "tpp::runtime::string_index(";
+        } else {
+            const auto descriptor = context_.types.lookup(container_type);
+            if (!descriptor.has_value()
+                || !std::holds_alternative<SemanticVectorType>(*descriptor)) {
+                report(
+                    target.span,
+                    "malformed semantic state: assignment target has an "
+                    "invalid indexed container type");
+                return false;
+            }
+            uses_vector_ = true;
+            output_ << "tpp::runtime::vector_index(";
+        }
+        uses_runtime_ = true;
+
+        if (!emit_assignment_target(target, storage, container_types, depth - 1)) {
+            output_ << ')';
+            return false;
+        }
+        output_ << ", ";
+        const auto& index = target.indices[depth - 1];
+        if (index == nullptr || !emit_expression(*index)) {
+            output_ << ')';
+            return false;
+        }
+        output_ << ')';
+        return true;
     }
 
     void emit_statement_node(
@@ -834,74 +1062,67 @@ private:
             return;
         }
 
-        if (statement.target.indices.empty()) {
-            if (*target_type != storage->type) {
-                report(
-                    statement.target.span,
-                    "malformed semantic state: direct assignment target type "
-                    "does not match its symbol");
-                return;
-            }
-            const auto direct_assign =
-                statement.operator_kind == AssignmentOperator::assign;
-            const auto string_add_assign =
-                statement.operator_kind == AssignmentOperator::add_assign
-                && storage->type == context_.types.string_type();
-            if ((!direct_assign && !string_add_assign)
-                || (storage->type != context_.types.string_type()
-                    && storage->type != context_.types.character_type())) {
-                report(
-                    span,
-                    "C++ code generation only supports '=' for string/char "
-                    "and '+=' for string assignments yet");
-                return;
-            }
+        const auto container_types = validate_assignment_indices(
+            statement.target,
+            storage->type,
+            *target_type);
+        if (!container_types.has_value()) {
+            return;
+        }
 
-            output_ << "    " << storage->generated_name
-                    << (string_add_assign ? " += " : " = ");
-            if (!emit_expression(*statement.value)) {
-                output_ << ";\n";
-                return;
-            }
+        const auto spelling =
+            assignment_operator_spelling(statement.operator_kind);
+        if (!spelling.has_value()) {
+            report(span, "malformed AST: unknown assignment operator");
+            return;
+        }
+        const auto direct_assignment =
+            statement.operator_kind == AssignmentOperator::assign;
+        const auto integer_compound =
+            *target_type == context_.types.integer_type();
+        const auto string_addition =
+            statement.operator_kind == AssignmentOperator::add_assign
+            && *target_type == context_.types.string_type();
+        const auto indexed_target = !statement.target.indices.empty();
+        const auto supported_direct_assignment = !indexed_target
+            && ((direct_assignment
+                    && (*target_type == context_.types.string_type()
+                        || *target_type == context_.types.character_type()
+                        || is_vector_type(*target_type)))
+                || string_addition);
+        const auto supported_indexed_assignment = indexed_target
+            && (direct_assignment || integer_compound || string_addition);
+        if (!supported_direct_assignment
+            && !supported_indexed_assignment) {
+            report(
+                span,
+                indexed_target
+                    ? "malformed semantic state: assignment operator is "
+                      "incompatible with its indexed target type"
+                    : "C++ code generation only supports '=' for string, "
+                      "char, and vector assignments and '+=' for string "
+                      "assignments yet");
+            return;
+        }
+        if (!context_.types.lookup(*target_type).has_value()
+            || *target_type == context_.types.void_type()) {
+            report(
+                statement.target.span,
+                "malformed semantic state: assignment target has an invalid "
+                "type");
+            return;
+        }
+
+        output_ << "    ";
+        if (!emit_assignment_target(
+                statement.target,
+                *storage,
+                *container_types,
+                statement.target.indices.size())) {
             output_ << ";\n";
             return;
         }
-
-        if (statement.target.indices.size() != 1
-            || storage->type != context_.types.string_type()
-            || *target_type != context_.types.character_type()
-            || statement.operator_kind != AssignmentOperator::assign) {
-            report(
-                statement.target.span,
-                "C++ code generation only supports one string index assigned "
-                "with '=' yet");
-            return;
-        }
-        const auto& index = statement.target.indices.front();
-        if (index == nullptr) {
-            report(
-                statement.target.span,
-                "malformed AST: assignment target index is missing");
-            return;
-        }
-        const auto index_type = context_.type_info.type_of(*index);
-        if (!index_type.has_value()
-            || *index_type != context_.types.integer_type()) {
-            report(
-                index->span,
-                "malformed semantic state: string assignment index does not "
-                "have type 'int'");
-            return;
-        }
-
-        uses_runtime_ = true;
-        output_ << "    tpp::runtime::string_index("
-                << storage->generated_name << ", ";
-        if (!emit_expression(*index)) {
-            output_ << ") = ;\n";
-            return;
-        }
-        output_ << ") = ";
+        output_ << ' ' << *spelling << ' ';
         if (!emit_expression(*statement.value)) {
             output_ << ";\n";
             return;
@@ -1014,6 +1235,22 @@ private:
             report(
                 statement.value->span,
                 "malformed semantic state: void return has a value");
+            return;
+        }
+
+        const auto value_type =
+            context_.type_info.type_of(*statement.value);
+        if (!value_type.has_value()) {
+            report(
+                statement.value->span,
+                "malformed semantic state: expression has no type");
+            return;
+        }
+        if (*value_type != function->return_type) {
+            report(
+                statement.value->span,
+                "malformed semantic state: return value type does not match "
+                "its function");
             return;
         }
 
@@ -1148,6 +1385,30 @@ private:
                 "malformed AST: 'print' argument is missing");
             return;
         }
+        const auto signature =
+            builtin_function_signature(BuiltinFunctionKind::print);
+        const auto result_type =
+            context_.type_info.type_of(statement_expression);
+        const auto expected_result =
+            semantic_primitive_type(signature.return_type);
+        const auto argument_type =
+            context_.type_info.type_of(*call.arguments.front());
+        const auto argument_kind = argument_type.has_value()
+            ? semantic_primitive_kind(*argument_type)
+            : std::nullopt;
+        if (!expected_result.has_value() || !result_type.has_value()
+            || *result_type != *expected_result
+            || signature.parameter_types.size() != 1
+            || !argument_kind.has_value()
+            || !builtin_parameter_accepts(
+                signature.parameter_types.front(),
+                *argument_kind)) {
+            report(
+                statement_expression.span,
+                "malformed semantic state: builtin 'print' call does not "
+                "match its signature");
+            return;
+        }
 
         output_ << "    std::cout << std::boolalpha << ";
         if (!emit_expression(*call.arguments.front())) {
@@ -1173,13 +1434,6 @@ private:
                 "malformed semantic state: expression has an unknown type");
             return false;
         }
-        if (std::holds_alternative<SemanticVectorType>(*descriptor)) {
-            report(
-                expression.span,
-                "C++ code generation does not support vector expressions "
-                "yet");
-            return false;
-        }
         return true;
     }
 
@@ -1197,7 +1451,8 @@ private:
                 using Node = std::decay_t<decltype(node)>;
                 if constexpr (std::is_same_v<Node, CallExpression>
                     || std::is_same_v<Node, IdentifierExpression>
-                    || std::is_same_v<Node, IndexExpression>) {
+                    || std::is_same_v<Node, IndexExpression>
+                    || std::is_same_v<Node, VectorConstructionExpression>) {
                     return emit_expression_node(
                         expression.span,
                         node,
@@ -1293,13 +1548,12 @@ private:
                 "its symbol");
             return false;
         }
-        if (storage->type != context_.types.string_type()
-            && storage->type != context_.types.character_type()
+        if (!is_supported_local_type(storage->type)
             && !current_parameter_ids_.contains(id->value)) {
             report(
                 span,
-                "C++ code generation only supports string or char local "
-                "identifier expressions yet");
+                "C++ code generation only supports string, char, or vector "
+                "local identifier expressions yet");
             return false;
         }
         output_ << storage->generated_name;
@@ -1709,29 +1963,45 @@ private:
                 "type");
             return false;
         }
-        if (*base_type != context_.types.string_type()) {
-            report(
-                expression.base->span,
-                "C++ code generation does not support vector indexing yet");
-            return false;
-        }
         if (*index_type != context_.types.integer_type()) {
             report(
                 expression.index->span,
-                "malformed semantic state: string index does not have type "
+                "malformed semantic state: index does not have type "
                 "'int'");
             return false;
         }
-        if (result_type != context_.types.character_type()) {
+
+        auto helper = std::string_view{};
+        auto expected_result = std::optional<TypeId>{};
+        if (*base_type == context_.types.string_type()) {
+            helper = "tpp::runtime::string_index(";
+            expected_result = context_.types.character_type();
+        } else {
+            const auto descriptor = context_.types.lookup(*base_type);
+            const auto* vector = descriptor.has_value()
+                ? std::get_if<SemanticVectorType>(&*descriptor)
+                : nullptr;
+            if (vector == nullptr) {
+                report(
+                    expression.base->span,
+                    "malformed semantic state: index base is not a string or "
+                    "vector");
+                return false;
+            }
+            helper = "tpp::runtime::vector_index(";
+            expected_result = vector->element_type;
+            uses_vector_ = true;
+        }
+        if (!expected_result.has_value() || result_type != *expected_result) {
             report(
                 span,
-                "malformed semantic state: string index result does not have "
-                "type 'char'");
+                "malformed semantic state: index result type does not match "
+                "its base type");
             return false;
         }
 
         uses_runtime_ = true;
-        output_ << "tpp::runtime::string_index(";
+        output_ << helper;
         if (!emit_expression(*expression.base)) {
             output_ << ')';
             return false;
@@ -1755,12 +2025,93 @@ private:
 
     [[nodiscard]] bool emit_expression_node(
         const SourceSpan span,
-        const VectorConstructionExpression&)
+        const VectorConstructionExpression& expression,
+        const TypeId result_type)
     {
-        report(
-            span,
-            "C++ code generation does not support vector construction yet");
-        return false;
+        const auto descriptor = context_.types.lookup(result_type);
+        const auto* vector = descriptor.has_value()
+            ? std::get_if<SemanticVectorType>(&*descriptor)
+            : nullptr;
+        if (vector == nullptr) {
+            report(
+                span,
+                "malformed semantic state: vector construction result has a "
+                "non-vector type");
+            return false;
+        }
+        if (!syntax_type_matches(expression.type, result_type)) {
+            report(
+                expression.type.span,
+                "malformed semantic state: vector construction semantic type "
+                "does not match its syntax type");
+            return false;
+        }
+        if (expression.arguments.size() > 2) {
+            report(
+                span,
+                "malformed semantic state: vector construction has an "
+                "unexpected number of arguments");
+            return false;
+        }
+
+        for (std::size_t index = 0;
+             index < expression.arguments.size();
+             ++index) {
+            const auto& argument = expression.arguments[index];
+            if (argument == nullptr) {
+                report(
+                    span,
+                    "malformed AST: vector construction argument is missing");
+                return false;
+            }
+            const auto argument_type = context_.type_info.type_of(*argument);
+            const auto expected_type = index == 0
+                ? context_.types.integer_type()
+                : vector->element_type;
+            if (!argument_type.has_value()
+                || *argument_type != expected_type) {
+                report(
+                    argument->span,
+                    "malformed semantic state: vector construction argument "
+                    "type does not match its position");
+                return false;
+            }
+        }
+
+        const auto vector_type = cpp_type(
+            result_type,
+            expression.type.span,
+            "vector construction");
+        if (!vector_type.has_value()) {
+            return false;
+        }
+        if (expression.arguments.empty()) {
+            output_ << *vector_type << "{}";
+            return true;
+        }
+
+        const auto element_type = cpp_type(
+            vector->element_type,
+            expression.type.span,
+            "vector element");
+        if (!element_type.has_value() || *element_type == "void") {
+            return false;
+        }
+        uses_runtime_ = true;
+        output_ << "tpp::runtime::make_vector<" << *element_type << ">(";
+        auto valid = true;
+        for (std::size_t index = 0;
+             index < expression.arguments.size();
+             ++index) {
+            if (index != 0) {
+                output_ << ", ";
+            }
+            if (!emit_expression(*expression.arguments[index])) {
+                valid = false;
+            }
+        }
+        output_ << ')';
+        return valid;
     }
 
     [[nodiscard]] bool emit_expression_node(
@@ -1793,6 +2144,7 @@ private:
     const FunctionEntry* current_function_{nullptr};
     std::unordered_set<std::size_t> current_parameter_ids_;
     std::unordered_set<std::size_t> current_variable_ids_;
+    bool uses_vector_{false};
     bool uses_runtime_{false};
 };
 
