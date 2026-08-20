@@ -47,6 +47,7 @@ target_compile_features(tpp_compiler PUBLIC cxx_std_20)
 target_include_directories(tpp_compiler
     PUBLIC
         "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
+        "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/runtime/include>"
         "$<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/generated>"
 )
 
