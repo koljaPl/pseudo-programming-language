@@ -210,12 +210,6 @@ public:
             return std::nullopt;
         }
 
-        output_
-            << "#include <cstdint>\n"
-               "#include <iostream>\n"
-               "#include <string>\n"
-               "\n";
-
         auto has_prototypes = false;
         for (const auto& function : functions_) {
             if (function.is_main) {
@@ -239,7 +233,18 @@ public:
         if (has_new_errors()) {
             return std::nullopt;
         }
-        return output_.str();
+
+        std::ostringstream generated;
+        generated.imbue(std::locale::classic());
+        generated
+            << "#include <cstdint>\n"
+               "#include <iostream>\n"
+               "#include <string>\n";
+        if (uses_runtime_) {
+            generated << "#include <pseudo/runtime.hpp>\n";
+        }
+        generated << '\n' << output_.str();
+        return generated.str();
     }
 
 private:
@@ -247,6 +252,11 @@ private:
         const FunctionDeclaration* declaration;
         SymbolId symbol;
         bool is_main;
+    };
+
+    struct StorageReference {
+        TypeId type;
+        std::string generated_name;
     };
 
     [[nodiscard]] bool has_new_errors() const noexcept
@@ -272,6 +282,57 @@ private:
             return nullptr;
         }
         return &context_.symbols.symbol(id);
+    }
+
+    [[nodiscard]] std::optional<StorageReference> storage_reference(
+        const SymbolId id,
+        const SourceSpan span,
+        const std::string_view role)
+    {
+        const auto* entry = symbol(id, span, role);
+        if (entry == nullptr) {
+            return std::nullopt;
+        }
+
+        if (const auto* parameter = std::get_if<ParameterSymbol>(&entry->data)) {
+            if (!current_parameter_ids_.contains(id.value)) {
+                report(
+                    span,
+                    "malformed semantic state: parameter reference is outside "
+                    "its function");
+                return std::nullopt;
+            }
+            return StorageReference{
+                .type = parameter->type,
+                .generated_name = generated_name("tpp_parameter_", id),
+            };
+        }
+
+        if (const auto* variable = std::get_if<VariableSymbol>(&entry->data)) {
+            if (!current_variable_ids_.contains(id.value)) {
+                report(
+                    span,
+                    "C++ code generation only supports references to local "
+                    "string or char variables in the current function yet");
+                return std::nullopt;
+            }
+            if (!variable->type.has_value()) {
+                report(
+                    span,
+                    "malformed semantic state: local variable has no type");
+                return std::nullopt;
+            }
+            return StorageReference{
+                .type = *variable->type,
+                .generated_name = generated_name("tpp_variable_", id),
+            };
+        }
+
+        report(
+            span,
+            "malformed semantic state: " + std::string{role}
+                + " is not a variable or parameter");
+        return std::nullopt;
     }
 
     [[nodiscard]] std::optional<std::string_view> cpp_type(
@@ -311,6 +372,38 @@ private:
 
         report(span, "malformed semantic state: unknown primitive type");
         return std::nullopt;
+    }
+
+    [[nodiscard]] std::optional<TypeId> semantic_primitive_type(
+        const PrimitiveTypeKind kind) const noexcept
+    {
+        switch (kind) {
+        case PrimitiveTypeKind::integer:
+            return context_.types.integer_type();
+        case PrimitiveTypeKind::boolean:
+            return context_.types.boolean_type();
+        case PrimitiveTypeKind::character:
+            return context_.types.character_type();
+        case PrimitiveTypeKind::string:
+            return context_.types.string_type();
+        case PrimitiveTypeKind::void_type:
+            return context_.types.void_type();
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] std::optional<PrimitiveTypeKind> semantic_primitive_kind(
+        const TypeId type) const noexcept
+    {
+        const auto descriptor = context_.types.lookup(type);
+        if (!descriptor.has_value()) {
+            return std::nullopt;
+        }
+        const auto* primitive =
+            std::get_if<PrimitiveTypeKind>(&*descriptor);
+        return primitive != nullptr
+            ? std::optional<PrimitiveTypeKind>{*primitive}
+            : std::nullopt;
     }
 
     [[nodiscard]] const FunctionSymbol* function_symbol(
@@ -558,6 +651,7 @@ private:
 
         current_function_ = &entry;
         current_parameter_ids_.clear();
+        current_variable_ids_.clear();
         for (const auto& parameter : entry.declaration->parameters) {
             if (const auto id = context_.declarations.symbol_for(parameter)) {
                 current_parameter_ids_.insert(id->value);
@@ -569,6 +663,7 @@ private:
         }
         output_ << "}\n";
         current_parameter_ids_.clear();
+        current_variable_ids_.clear();
         current_function_ = nullptr;
     }
 
@@ -602,18 +697,216 @@ private:
 
     void emit_statement_node(
         const SourceSpan span,
-        const VariableDeclaration&)
+        const VariableDeclaration& declaration)
     {
-        report(
-            span,
-            "C++ code generation does not support local variables yet");
+        const auto declaration_id =
+            context_.declarations.symbol_for(declaration);
+        if (!declaration_id.has_value()) {
+            report(
+                declaration.name_span,
+                "malformed semantic state: local variable declaration has no "
+                "symbol");
+            return;
+        }
+
+        const auto* entry = symbol(
+            *declaration_id,
+            declaration.name_span,
+            "local variable declaration");
+        if (entry == nullptr) {
+            return;
+        }
+        const auto* variable = std::get_if<VariableSymbol>(&entry->data);
+        if (variable == nullptr) {
+            report(
+                declaration.name_span,
+                "malformed semantic state: local variable declaration symbol "
+                "is not a variable");
+            return;
+        }
+        if (!variable->type.has_value()) {
+            report(
+                declaration.name_span,
+                "malformed semantic state: local variable has no declared "
+                "type");
+            return;
+        }
+        if (*variable->type != context_.types.string_type()
+            && *variable->type != context_.types.character_type()) {
+            report(
+                declaration.type.span,
+                "C++ code generation only supports local variables of type "
+                "'string' or 'char' yet");
+            return;
+        }
+        if (declaration.initializer == nullptr) {
+            report(
+                span,
+                "C++ code generation only supports initialized local string "
+                "or char variables yet");
+            return;
+        }
+
+        const auto initializer_type =
+            context_.type_info.type_of(*declaration.initializer);
+        if (!initializer_type.has_value()) {
+            report(
+                declaration.initializer->span,
+                "malformed semantic state: local variable initializer has no "
+                "type");
+            return;
+        }
+        if (*initializer_type != *variable->type) {
+            report(
+                declaration.initializer->span,
+                "malformed semantic state: local variable initializer type "
+                "does not match its declaration");
+            return;
+        }
+
+        output_ << "    "
+                << (*variable->type == context_.types.string_type()
+                        ? "std::string"
+                        : "char")
+                << ' ' << generated_name("tpp_variable_", *declaration_id)
+                << " = ";
+        if (!emit_expression(*declaration.initializer)) {
+            output_ << ";\n";
+            return;
+        }
+        output_ << ";\n";
+        current_variable_ids_.insert(declaration_id->value);
     }
 
     void emit_statement_node(
         const SourceSpan span,
-        const AssignmentStatement&)
+        const AssignmentStatement& statement)
     {
-        report(span, "C++ code generation does not support assignments yet");
+        if (statement.value == nullptr) {
+            report(span, "malformed AST: assignment has no value");
+            return;
+        }
+
+        const auto resolution =
+            context_.resolutions.resolution_for(statement.target);
+        if (!resolution.has_value()) {
+            report(
+                statement.target.name_span,
+                "malformed semantic state: assignment target has no "
+                "resolution");
+            return;
+        }
+        const auto* target_id = std::get_if<SymbolId>(&*resolution);
+        if (target_id == nullptr) {
+            report(
+                statement.target.name_span,
+                "malformed semantic state: assignment target resolves to a "
+                "builtin");
+            return;
+        }
+        const auto storage = storage_reference(
+            *target_id,
+            statement.target.name_span,
+            "assignment target");
+        if (!storage.has_value()) {
+            return;
+        }
+
+        const auto target_type = context_.type_info.type_of(statement.target);
+        if (!target_type.has_value()) {
+            report(
+                statement.target.span,
+                "malformed semantic state: assignment target has no type");
+            return;
+        }
+        const auto value_type = context_.type_info.type_of(*statement.value);
+        if (!value_type.has_value()) {
+            report(
+                statement.value->span,
+                "malformed semantic state: assignment value has no type");
+            return;
+        }
+        if (*value_type != *target_type) {
+            report(
+                statement.value->span,
+                "malformed semantic state: assignment value type does not "
+                "match its target");
+            return;
+        }
+
+        if (statement.target.indices.empty()) {
+            if (*target_type != storage->type) {
+                report(
+                    statement.target.span,
+                    "malformed semantic state: direct assignment target type "
+                    "does not match its symbol");
+                return;
+            }
+            const auto direct_assign =
+                statement.operator_kind == AssignmentOperator::assign;
+            const auto string_add_assign =
+                statement.operator_kind == AssignmentOperator::add_assign
+                && storage->type == context_.types.string_type();
+            if ((!direct_assign && !string_add_assign)
+                || (storage->type != context_.types.string_type()
+                    && storage->type != context_.types.character_type())) {
+                report(
+                    span,
+                    "C++ code generation only supports '=' for string/char "
+                    "and '+=' for string assignments yet");
+                return;
+            }
+
+            output_ << "    " << storage->generated_name
+                    << (string_add_assign ? " += " : " = ");
+            if (!emit_expression(*statement.value)) {
+                output_ << ";\n";
+                return;
+            }
+            output_ << ";\n";
+            return;
+        }
+
+        if (statement.target.indices.size() != 1
+            || storage->type != context_.types.string_type()
+            || *target_type != context_.types.character_type()
+            || statement.operator_kind != AssignmentOperator::assign) {
+            report(
+                statement.target.span,
+                "C++ code generation only supports one string index assigned "
+                "with '=' yet");
+            return;
+        }
+        const auto& index = statement.target.indices.front();
+        if (index == nullptr) {
+            report(
+                statement.target.span,
+                "malformed AST: assignment target index is missing");
+            return;
+        }
+        const auto index_type = context_.type_info.type_of(*index);
+        if (!index_type.has_value()
+            || *index_type != context_.types.integer_type()) {
+            report(
+                index->span,
+                "malformed semantic state: string assignment index does not "
+                "have type 'int'");
+            return;
+        }
+
+        uses_runtime_ = true;
+        output_ << "    tpp::runtime::string_index("
+                << storage->generated_name << ", ";
+        if (!emit_expression(*index)) {
+            output_ << ") = ;\n";
+            return;
+        }
+        output_ << ") = ";
+        if (!emit_expression(*statement.value)) {
+            output_ << ";\n";
+            return;
+        }
+        output_ << ";\n";
     }
 
     void emit_statement_node(
@@ -636,15 +929,21 @@ private:
             return;
         }
 
-        const auto target = resolve_call_target(*call, statement.expression->span);
-        if (!target.has_value()) {
-            return;
-        }
-        if (const auto* builtin =
-                std::get_if<BuiltinFunctionKind>(&*target);
-            builtin != nullptr && *builtin == BuiltinFunctionKind::print) {
-            emit_print_statement(*statement.expression, *call);
-            return;
+        const auto* member = call->callee != nullptr
+            ? unwrap_member_access(*call->callee)
+            : nullptr;
+        if (member == nullptr) {
+            const auto target =
+                resolve_call_target(*call, statement.expression->span);
+            if (!target.has_value()) {
+                return;
+            }
+            if (const auto* builtin =
+                    std::get_if<BuiltinFunctionKind>(&*target);
+                builtin != nullptr && *builtin == BuiltinFunctionKind::print) {
+                emit_print_statement(*statement.expression, *call);
+                return;
+            }
         }
 
         output_ << "    ";
@@ -889,9 +1188,23 @@ private:
         if (!validate_expression_type(expression)) {
             return false;
         }
+        const auto result_type = context_.type_info.type_of(expression);
+        if (!result_type.has_value()) {
+            return false;
+        }
         return std::visit(
-            [this, &expression](const auto& node) {
-                return emit_expression_node(expression.span, node);
+            [this, &expression, result_type](const auto& node) {
+                using Node = std::decay_t<decltype(node)>;
+                if constexpr (std::is_same_v<Node, CallExpression>
+                    || std::is_same_v<Node, IdentifierExpression>
+                    || std::is_same_v<Node, IndexExpression>) {
+                    return emit_expression_node(
+                        expression.span,
+                        node,
+                        *result_type);
+                } else {
+                    return emit_expression_node(expression.span, node);
+                }
             },
             expression.node);
     }
@@ -949,7 +1262,8 @@ private:
 
     [[nodiscard]] bool emit_expression_node(
         const SourceSpan span,
-        const IdentifierExpression& expression)
+        const IdentifierExpression& expression,
+        const TypeId result_type)
     {
         const auto resolution =
             context_.resolutions.resolution_for(expression);
@@ -963,29 +1277,32 @@ private:
         if (id == nullptr) {
             report(
                 span,
-                "C++ code generation only supports parameter identifier "
-                "expressions yet");
+                "malformed semantic state: value identifier resolves to a "
+                "builtin");
             return false;
         }
-        const auto* entry = symbol(*id, span, "identifier reference");
-        if (entry == nullptr) {
+        const auto storage =
+            storage_reference(*id, span, "identifier reference");
+        if (!storage.has_value()) {
             return false;
         }
-        if (!std::holds_alternative<ParameterSymbol>(entry->data)) {
+        if (storage->type != result_type) {
             report(
                 span,
-                "C++ code generation only supports references to parameters "
-                "yet");
+                "malformed semantic state: identifier type does not match "
+                "its symbol");
             return false;
         }
-        if (!current_parameter_ids_.contains(id->value)) {
+        if (storage->type != context_.types.string_type()
+            && storage->type != context_.types.character_type()
+            && !current_parameter_ids_.contains(id->value)) {
             report(
                 span,
-                "malformed semantic state: parameter reference is outside "
-                "its function");
+                "C++ code generation only supports string or char local "
+                "identifier expressions yet");
             return false;
         }
-        output_ << generated_name("tpp_parameter_", *id);
+        output_ << storage->generated_name;
         return true;
     }
 
@@ -1060,8 +1377,20 @@ private:
 
     [[nodiscard]] bool emit_expression_node(
         const SourceSpan span,
-        const CallExpression& expression)
+        const CallExpression& expression,
+        const TypeId result_type)
     {
+        if (expression.callee != nullptr) {
+            if (const auto* member =
+                    unwrap_member_access(*expression.callee)) {
+                return emit_member_call(
+                    span,
+                    expression,
+                    *member,
+                    result_type);
+            }
+        }
+
         const auto target = resolve_call_target(expression, span);
         if (!target.has_value()) {
             return false;
@@ -1069,32 +1398,223 @@ private:
 
         if (const auto* builtin =
                 std::get_if<BuiltinFunctionKind>(&*target)) {
-            if (*builtin == BuiltinFunctionKind::print) {
-                report(
-                    span,
-                    "C++ code generation only supports builtin 'print' as "
-                    "an expression statement");
-            } else {
-                report(
-                    expression.callee != nullptr
-                        ? expression.callee->span
-                        : span,
-                    "C++ code generation does not support builtin '"
-                        + std::string{builtin_name(*builtin)} + "' yet");
-            }
-            return false;
+            return emit_builtin_call(span, expression, *builtin, result_type);
         }
 
         return emit_user_call(
             span,
             expression,
-            std::get<SymbolId>(*target));
+            std::get<SymbolId>(*target),
+            result_type);
+    }
+
+    [[nodiscard]] bool emit_builtin_call(
+        const SourceSpan span,
+        const CallExpression& call,
+        const BuiltinFunctionKind builtin,
+        const TypeId result_type)
+    {
+        switch (builtin) {
+        case BuiltinFunctionKind::print:
+            report(
+                span,
+                "C++ code generation only supports builtin 'print' as an "
+                "expression statement");
+            return false;
+        case BuiltinFunctionKind::read_int:
+            report(
+                call.callee != nullptr ? call.callee->span : span,
+                "C++ code generation does not support builtin 'read_int' "
+                "yet");
+            return false;
+        case BuiltinFunctionKind::read_string:
+        case BuiltinFunctionKind::read_char:
+        case BuiltinFunctionKind::len:
+        case BuiltinFunctionKind::substring:
+            break;
+        default:
+            report(span, "malformed semantic state: unknown builtin function");
+            return false;
+        }
+
+        const auto signature = builtin_function_signature(builtin);
+        const auto expected_result =
+            semantic_primitive_type(signature.return_type);
+        if (!expected_result.has_value() || result_type != *expected_result) {
+            report(
+                span,
+                "malformed semantic state: builtin call result type does not "
+                "match its signature");
+            return false;
+        }
+        if (call.arguments.size() != signature.parameter_types.size()) {
+            report(
+                span,
+                "malformed semantic state: builtin '"
+                    + std::string{builtin_name(builtin)}
+                    + "' has an unexpected number of arguments");
+            return false;
+        }
+        for (std::size_t index = 0; index < call.arguments.size(); ++index) {
+            const auto& argument = call.arguments[index];
+            if (argument == nullptr) {
+                report(span, "malformed AST: builtin call argument is missing");
+                return false;
+            }
+            const auto argument_type = context_.type_info.type_of(*argument);
+            const auto argument_kind = argument_type.has_value()
+                ? semantic_primitive_kind(*argument_type)
+                : std::nullopt;
+            if (!argument_kind.has_value()
+                || !builtin_parameter_accepts(
+                    signature.parameter_types[index],
+                    *argument_kind)) {
+                report(
+                    argument->span,
+                    "malformed semantic state: builtin argument type does not "
+                    "match its signature");
+                return false;
+            }
+        }
+
+        uses_runtime_ = true;
+        switch (builtin) {
+        case BuiltinFunctionKind::read_string:
+            output_ << "tpp::runtime::read_string()";
+            return true;
+        case BuiltinFunctionKind::read_char:
+            output_ << "tpp::runtime::read_char()";
+            return true;
+        case BuiltinFunctionKind::len:
+            output_ << "tpp::runtime::string_length(";
+            if (!emit_expression(*call.arguments[0])) {
+                output_ << ')';
+                return false;
+            }
+            output_ << ')';
+            return true;
+        case BuiltinFunctionKind::substring:
+            output_ << "tpp::runtime::substring(";
+            for (std::size_t index = 0; index < call.arguments.size(); ++index) {
+                if (index != 0) {
+                    output_ << ", ";
+                }
+                if (!emit_expression(*call.arguments[index])) {
+                    output_ << ')';
+                    return false;
+                }
+            }
+            output_ << ')';
+            return true;
+        case BuiltinFunctionKind::print:
+        case BuiltinFunctionKind::read_int:
+            break;
+        }
+
+        report(span, "malformed semantic state: unknown builtin function");
+        return false;
+    }
+
+    [[nodiscard]] bool emit_member_call(
+        const SourceSpan span,
+        const CallExpression& call,
+        const MemberAccessExpression& member,
+        const TypeId result_type)
+    {
+        const auto kind = context_.type_info.member_for(member);
+        if (!kind.has_value()) {
+            report(
+                call.callee != nullptr ? call.callee->span : span,
+                "malformed semantic state: string member has no semantic "
+                "identity");
+            return false;
+        }
+        if (member.base == nullptr) {
+            report(span, "malformed AST: string member has no receiver");
+            return false;
+        }
+
+        const auto receiver_type = context_.type_info.type_of(*member.base);
+        if (!receiver_type.has_value()
+            || *receiver_type != context_.types.string_type()) {
+            report(
+                member.base->span,
+                "malformed semantic state: string member receiver does not "
+                "have type 'string'");
+            return false;
+        }
+
+        auto expected_arity = std::size_t{0};
+        auto expected_result = context_.types.integer_type();
+        auto helper = std::string_view{"tpp::runtime::string_length("};
+        switch (*kind) {
+        case MemberKind::string_length:
+            break;
+        case MemberKind::string_push:
+            expected_arity = 1;
+            expected_result = context_.types.void_type();
+            helper = "tpp::runtime::string_push(";
+            break;
+        default:
+            report(
+                call.callee != nullptr ? call.callee->span : span,
+                "malformed semantic state: unknown string member identity");
+            return false;
+        }
+        if (result_type != expected_result) {
+            report(
+                span,
+                "malformed semantic state: string member call result type "
+                "does not match its member");
+            return false;
+        }
+        if (call.arguments.size() != expected_arity) {
+            report(
+                span,
+                "malformed semantic state: string member call has an "
+                "unexpected number of arguments");
+            return false;
+        }
+        if (*kind == MemberKind::string_push
+            && call.arguments.front() == nullptr) {
+            report(span, "malformed AST: string push argument is missing");
+            return false;
+        }
+        if (*kind == MemberKind::string_push) {
+            const auto argument_type =
+                context_.type_info.type_of(*call.arguments.front());
+            if (!argument_type.has_value()
+                || *argument_type != context_.types.character_type()) {
+                report(
+                    call.arguments.front()->span,
+                    "malformed semantic state: string push argument does not "
+                    "have type 'char'");
+                return false;
+            }
+        }
+
+        uses_runtime_ = true;
+        output_ << helper;
+        if (!emit_expression(*member.base)) {
+            output_ << ')';
+            return false;
+        }
+        if (*kind == MemberKind::string_push) {
+            output_ << ", ";
+            if (!emit_expression(*call.arguments.front())) {
+                output_ << ')';
+                return false;
+            }
+        }
+        output_ << ')';
+        return true;
     }
 
     [[nodiscard]] bool emit_user_call(
         const SourceSpan span,
         const CallExpression& call,
-        const SymbolId function_id)
+        const SymbolId function_id,
+        const TypeId result_type)
     {
         const auto callee_span =
             call.callee != nullptr ? call.callee->span : span;
@@ -1130,17 +1650,36 @@ private:
                 "resolved function");
             return false;
         }
+        if (result_type != function->return_type) {
+            report(
+                span,
+                "malformed semantic state: call result type does not match "
+                "resolved function");
+            return false;
+        }
+
+        for (std::size_t index = 0; index < call.arguments.size(); ++index) {
+            const auto& argument = call.arguments[index];
+            if (argument == nullptr) {
+                report(span, "malformed AST: call argument is missing");
+                return false;
+            }
+            const auto argument_type = context_.type_info.type_of(*argument);
+            if (!argument_type.has_value()
+                || *argument_type != function->parameter_types[index]) {
+                report(
+                    argument->span,
+                    "malformed semantic state: call argument type does not "
+                    "match resolved function");
+                return false;
+            }
+        }
 
         output_ << generated_name("tpp_function_", function_id) << '(';
         auto valid = true;
         for (std::size_t index = 0; index < call.arguments.size(); ++index) {
             if (index != 0) {
                 output_ << ", ";
-            }
-            if (call.arguments[index] == nullptr) {
-                report(span, "malformed AST: call argument is missing");
-                valid = false;
-                continue;
             }
             if (!emit_expression(*call.arguments[index])) {
                 valid = false;
@@ -1152,10 +1691,58 @@ private:
 
     [[nodiscard]] bool emit_expression_node(
         const SourceSpan span,
-        const IndexExpression&)
+        const IndexExpression& expression,
+        const TypeId result_type)
     {
-        report(span, "C++ code generation does not support indexing yet");
-        return false;
+        if (expression.base == nullptr || expression.index == nullptr) {
+            report(
+                span,
+                "malformed AST: index expression is missing an operand");
+            return false;
+        }
+        const auto base_type = context_.type_info.type_of(*expression.base);
+        const auto index_type = context_.type_info.type_of(*expression.index);
+        if (!base_type.has_value() || !index_type.has_value()) {
+            report(
+                span,
+                "malformed semantic state: index expression operand has no "
+                "type");
+            return false;
+        }
+        if (*base_type != context_.types.string_type()) {
+            report(
+                expression.base->span,
+                "C++ code generation does not support vector indexing yet");
+            return false;
+        }
+        if (*index_type != context_.types.integer_type()) {
+            report(
+                expression.index->span,
+                "malformed semantic state: string index does not have type "
+                "'int'");
+            return false;
+        }
+        if (result_type != context_.types.character_type()) {
+            report(
+                span,
+                "malformed semantic state: string index result does not have "
+                "type 'char'");
+            return false;
+        }
+
+        uses_runtime_ = true;
+        output_ << "tpp::runtime::string_index(";
+        if (!emit_expression(*expression.base)) {
+            output_ << ')';
+            return false;
+        }
+        output_ << ", ";
+        if (!emit_expression(*expression.index)) {
+            output_ << ')';
+            return false;
+        }
+        output_ << ')';
+        return true;
     }
 
     [[nodiscard]] bool emit_expression_node(
@@ -1205,6 +1792,8 @@ private:
     std::optional<SymbolId> main_symbol_;
     const FunctionEntry* current_function_{nullptr};
     std::unordered_set<std::size_t> current_parameter_ids_;
+    std::unordered_set<std::size_t> current_variable_ids_;
+    bool uses_runtime_{false};
 };
 
 }
