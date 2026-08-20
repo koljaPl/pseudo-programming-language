@@ -2,6 +2,7 @@
 
 #include "pseudo/runtime.hpp"
 
+#include <array>
 #include <cstdint>
 #include <iostream>
 #include <limits>
@@ -9,8 +10,32 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <utility>
+#include <vector>
 
 namespace {
+
+static_assert(std::is_same_v<
+    decltype(tpp::runtime::vector_index(
+        std::declval<std::vector<std::int64_t>&>(),
+        std::int64_t{})),
+    std::vector<std::int64_t>::reference>);
+static_assert(std::is_same_v<
+    decltype(tpp::runtime::vector_index(
+        std::declval<const std::vector<std::int64_t>&>(),
+        std::int64_t{})),
+    std::vector<std::int64_t>::const_reference>);
+static_assert(std::is_same_v<
+    decltype(tpp::runtime::vector_index(
+        std::declval<std::vector<bool>&>(),
+        std::int64_t{})),
+    std::vector<bool>::reference>);
+static_assert(std::is_same_v<
+    decltype(tpp::runtime::vector_index(
+        std::declval<const std::vector<bool>&>(),
+        std::int64_t{})),
+    std::vector<bool>::const_reference>);
 
 class ScopedCinBuffer {
 public:
@@ -141,6 +166,103 @@ void push_appends_one_byte()
     TPP_CHECK_EQ(value, expected);
 }
 
+void vector_construction_checks_size_and_initializes_values()
+{
+    const auto empty = tpp::runtime::make_vector<std::int64_t>(0);
+    TPP_CHECK(empty.empty());
+
+    const auto integers = tpp::runtime::make_vector<std::int64_t>(3);
+    TPP_CHECK_EQ(integers.size(), std::size_t{3});
+    TPP_CHECK_EQ(integers[0], std::int64_t{0});
+    TPP_CHECK_EQ(integers[2], std::int64_t{0});
+
+    const auto booleans = tpp::runtime::make_vector<bool>(2);
+    TPP_CHECK_EQ(booleans.size(), std::size_t{2});
+    TPP_CHECK(!booleans[0]);
+    TPP_CHECK(!booleans[1]);
+
+    const auto characters = tpp::runtime::make_vector<char>(2);
+    TPP_CHECK_EQ(characters[0], '\0');
+    TPP_CHECK_EQ(characters[1], '\0');
+
+    const auto strings = tpp::runtime::make_vector<std::string>(
+        2,
+        std::string{"seed"});
+    TPP_CHECK_EQ(strings.size(), std::size_t{2});
+    TPP_CHECK_EQ(strings[0], std::string{"seed"});
+    TPP_CHECK_EQ(strings[1], std::string{"seed"});
+
+    check_exception<std::length_error>(
+        [] { (void)tpp::runtime::make_vector<int>(-1); },
+        "vector size out of range");
+
+    struct WideElement {
+        std::array<char, 4096> storage{};
+    };
+
+    TPP_CHECK(std::cmp_less(
+        std::vector<WideElement>{}.max_size(),
+        std::numeric_limits<std::int64_t>::max()));
+    check_exception<std::length_error>(
+        [] {
+            (void)tpp::runtime::make_vector<WideElement>(
+                std::numeric_limits<std::int64_t>::max());
+        },
+        "vector size out of range");
+}
+
+void vector_indexing_is_checked_and_mutable()
+{
+    auto values = tpp::runtime::make_vector<std::int64_t>(3, 7);
+    const auto& const_values = values;
+
+    TPP_CHECK_EQ(tpp::runtime::vector_index(const_values, 0), 7);
+    TPP_CHECK_EQ(tpp::runtime::vector_index(const_values, 2), 7);
+    tpp::runtime::vector_index(values, 1) = 42;
+    TPP_CHECK_EQ(values[1], 42);
+
+    for (const auto index : {std::int64_t{-1}, std::int64_t{3}}) {
+        check_exception<std::out_of_range>(
+            [&] {
+                (void)tpp::runtime::vector_index(const_values, index);
+            },
+            "vector index out of range");
+        check_exception<std::out_of_range>(
+            [&] {
+                (void)tpp::runtime::vector_index(values, index);
+            },
+            "vector index out of range");
+    }
+}
+
+void vector_bool_proxy_and_nested_vectors_work()
+{
+    auto bits = tpp::runtime::make_vector<bool>(3, false);
+    tpp::runtime::vector_index(bits, 1) = true;
+    const auto& const_bits = bits;
+    TPP_CHECK(!tpp::runtime::vector_index(const_bits, 0));
+    TPP_CHECK(tpp::runtime::vector_index(const_bits, 1));
+
+    const auto row = tpp::runtime::make_vector<std::int64_t>(2, 7);
+    auto matrix = tpp::runtime::make_vector<std::vector<std::int64_t>>(2, row);
+    tpp::runtime::vector_index(
+        tpp::runtime::vector_index(matrix, 1),
+        0) = 9;
+
+    TPP_CHECK_EQ(matrix[0][0], 7);
+    TPP_CHECK_EQ(matrix[1][0], 9);
+    TPP_CHECK_EQ(matrix[1][1], 7);
+
+    const auto bit_row = tpp::runtime::make_vector<bool>(2, false);
+    auto bit_matrix =
+        tpp::runtime::make_vector<std::vector<bool>>(2, bit_row);
+    tpp::runtime::vector_index(
+        tpp::runtime::vector_index(bit_matrix, 1),
+        0) = true;
+    TPP_CHECK(!bit_matrix[0][0]);
+    TPP_CHECK(bit_matrix[1][0]);
+}
+
 void formatted_reads_skip_whitespace()
 {
     std::istringstream input{"  hello  x"};
@@ -178,6 +300,9 @@ int main()
         {"checked byte indexing", indexing_reads_and_mutates_bytes},
         {"half-open substring", substring_uses_half_open_checked_bounds},
         {"push one byte", push_appends_one_byte},
+        {"vector construction", vector_construction_checks_size_and_initializes_values},
+        {"checked vector indexing", vector_indexing_is_checked_and_mutable},
+        {"vector bool and nesting", vector_bool_proxy_and_nested_vectors_work},
         {"formatted reads", formatted_reads_skip_whitespace},
         {"read failures", failed_reads_throw},
     });
