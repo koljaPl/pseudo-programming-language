@@ -818,6 +818,191 @@ int main() {
         "std::string{\"abcd\", 4}))");
 }
 
+void vector_types_construction_and_storage_are_recursive()
+{
+    constexpr std::string_view source = R"(vector<int> keep_int(vector<int> value) {
+    return value;
+}
+vector<bool> keep_bool(vector<bool> value) {
+    return value;
+}
+vector<char> keep_char(vector<char> value) {
+    return value;
+}
+vector<string> keep_string(vector<string> value) {
+    return value;
+}
+vector<vector<string>> keep_nested(vector<vector<string>> value) {
+    return value;
+}
+int main() {
+    vector<int> integers = vector<int>();
+    vector<bool> booleans = vector<bool>(2);
+    vector<char> characters = vector<char>(2, 'x');
+    vector<string> strings = vector<string>(1, "item");
+    vector<vector<string>> nested =
+        vector<vector<string>>(2, vector<string>(1, "nested"));
+    integers = keep_int(integers);
+    booleans = keep_bool(booleans);
+    characters = keep_char(characters);
+    strings = keep_string(strings);
+    nested = keep_nested(nested);
+    return 0;
+}
+)";
+
+    const auto output = generate_source(source);
+    tpp::test::check_contains(output, "#include <vector>\n");
+    tpp::test::check_contains(output, "#include <pseudo/runtime.hpp>\n");
+    tpp::test::check_contains(output, "std::vector<std::int64_t>");
+    tpp::test::check_contains(output, "std::vector<bool>");
+    tpp::test::check_contains(output, "std::vector<char>");
+    tpp::test::check_contains(output, "std::vector<std::string>");
+    tpp::test::check_contains(
+        output,
+        "std::vector<std::vector<std::string>>");
+    tpp::test::check_contains(
+        output,
+        "std::vector<std::int64_t>{}");
+    tpp::test::check_contains(
+        output,
+        "tpp::runtime::make_vector<bool>(std::int64_t{2})");
+    tpp::test::check_contains(
+        output,
+        "tpp::runtime::make_vector<char>(std::int64_t{2}, 'x')");
+    tpp::test::check_contains(
+        output,
+        "tpp::runtime::make_vector<std::string>(std::int64_t{1}, "
+        "std::string{\"item\", 4})");
+    tpp::test::check_contains(
+        output,
+        "tpp::runtime::make_vector<std::vector<std::string>>("
+        "std::int64_t{2}, tpp::runtime::make_vector<std::string>("
+        "std::int64_t{1}, std::string{\"nested\", 6}))");
+}
+
+void vector_indexing_and_assignments_use_checked_runtime()
+{
+    constexpr std::string_view source = R"(int inspect(
+    vector<vector<int>> matrix,
+    vector<bool> flags,
+    vector<string> texts
+) {
+    matrix[0][1] = 4;
+    matrix[1][1] += 2;
+    flags[0] = true;
+    texts[0] = "ok";
+    texts[1][0] = 'X';
+    print(matrix[0][1]);
+    print(flags[0]);
+    print(texts[1][0]);
+    return matrix[1][1];
+}
+int main() {
+    vector<vector<int>> matrix =
+        vector<vector<int>>(2, vector<int>(2, 0));
+    vector<bool> flags = vector<bool>(1, false);
+    vector<string> texts = vector<string>(2, "hi");
+    return inspect(matrix, flags, texts);
+}
+)";
+
+    const auto output = generate_source(source);
+    tpp::test::check_contains(
+        output,
+        "tpp::runtime::vector_index(tpp::runtime::vector_index("
+        "tpp_parameter_1, std::int64_t{0}), std::int64_t{1}) "
+        "= std::int64_t{4};");
+    tpp::test::check_contains(
+        output,
+        "tpp::runtime::vector_index(tpp::runtime::vector_index("
+        "tpp_parameter_1, std::int64_t{1}), std::int64_t{1}) "
+        "+= std::int64_t{2};");
+    tpp::test::check_contains(
+        output,
+        "tpp::runtime::vector_index(tpp_parameter_2, std::int64_t{0}) "
+        "= true;");
+    tpp::test::check_contains(
+        output,
+        "tpp::runtime::vector_index(tpp_parameter_3, std::int64_t{0}) "
+        "= std::string{\"ok\", 2};");
+    tpp::test::check_contains(
+        output,
+        "tpp::runtime::string_index(tpp::runtime::vector_index("
+        "tpp_parameter_3, std::int64_t{1}), std::int64_t{0}) = 'X';");
+}
+
+void malformed_vector_state_has_no_partial_output()
+{
+    {
+        CheckedProgram checked{R"(int main() {
+    vector<int> values = vector<int>(1, 0);
+    return 0;
+}
+)"};
+        auto& body = *require_main(checked.program()).body;
+        auto& declaration = require_variant<tpp::VariableDeclaration>(
+            require_statement(body.items.front()).node);
+        TPP_CHECK(declaration.initializer != nullptr);
+        auto& construction =
+            require_variant<tpp::VectorConstructionExpression>(
+                declaration.initializer->node);
+        auto& vector_type =
+            require_variant<tpp::VectorType>(construction.type.node);
+        TPP_CHECK(vector_type.element_type != nullptr);
+        vector_type.element_type->node = tpp::ScalarTypeKind::string;
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!generate(checked, diagnostics).has_value());
+        TPP_CHECK(diagnostics.has_errors());
+        check_has_diagnostic(diagnostics, "semantic type");
+    }
+
+    {
+        CheckedProgram checked{R"(int main() {
+    vector<int> values = vector<int>(1, 0);
+    return 0;
+}
+)"};
+        auto& body = *require_main(checked.program()).body;
+        auto& declaration = require_variant<tpp::VariableDeclaration>(
+            require_statement(body.items.front()).node);
+        TPP_CHECK(declaration.initializer != nullptr);
+        auto& construction =
+            require_variant<tpp::VectorConstructionExpression>(
+                declaration.initializer->node);
+        TPP_CHECK_EQ(construction.arguments.size(), std::size_t{2});
+        construction.arguments.front().reset();
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!generate(checked, diagnostics).has_value());
+        TPP_CHECK(diagnostics.has_errors());
+        check_has_diagnostic(diagnostics, "malformed AST");
+    }
+
+    {
+        CheckedProgram checked{R"(int main() {
+    vector<string> values = vector<string>(1, "item");
+    return 0;
+}
+)"};
+        auto& body = *require_main(checked.program()).body;
+        auto& declaration = require_variant<tpp::VariableDeclaration>(
+            require_statement(body.items.front()).node);
+        TPP_CHECK(declaration.initializer != nullptr);
+        auto& construction =
+            require_variant<tpp::VectorConstructionExpression>(
+                declaration.initializer->node);
+        TPP_CHECK_EQ(construction.arguments.size(), std::size_t{2});
+        std::swap(construction.arguments[0], construction.arguments[1]);
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!generate(checked, diagnostics).has_value());
+        TPP_CHECK(diagnostics.has_errors());
+        check_has_diagnostic(diagnostics, "vector construction argument");
+    }
+}
+
 void unsupported_local_shapes_have_no_partial_output()
 {
     struct Case {
@@ -825,19 +1010,22 @@ void unsupported_local_shapes_have_no_partial_output()
         std::string_view diagnostic;
     };
 
-    constexpr std::array<Case, 4> cases{
+    constexpr std::array<Case, 5> cases{
         Case{
             "int main() { string text; return 0; }",
-            "initialized local string or char"},
+            "initialized local string, char, or vector"},
         Case{
             "int main() { char value; return 0; }",
-            "initialized local string or char"},
+            "initialized local string, char, or vector"},
+        Case{
+            "int main() { vector<int> values; return 0; }",
+            "initialized local string, char, or vector"},
         Case{
             "int main() { int value = 1; return 0; }",
-            "local variables of type 'string' or 'char'"},
+            "local variables of type 'string', 'char', or 'vector<T>'"},
         Case{
             "int main() { bool value = true; return 0; }",
-            "local variables of type 'string' or 'char'"},
+            "local variables of type 'string', 'char', or 'vector<T>'"},
     };
 
     for (const auto& test_case : cases) {
@@ -1039,9 +1227,9 @@ void unsupported_program_shapes_report_without_partial_output()
             "int main() { return outer(); }",
             "nested functions"},
         Case{
-            "vector<int> identity(vector<int> value) { return value; } "
-            "int main() { return 0; }",
-            "vector"},
+            "int helper(int value) { value = 1; return value; } "
+            "int main() { return helper(0); }",
+            "only supports '=' for string, char, and vector assignments"},
     };
 
     for (const auto& test_case : cases) {
@@ -1431,6 +1619,12 @@ int main()
          initialized_string_and_char_locals_are_supported},
         {"temporary strings support indexing and length",
          temporary_strings_support_indexing_and_length},
+        {"recursive vector types construction and storage",
+         vector_types_construction_and_storage_are_recursive},
+        {"vector indexing and assignments use checked runtime",
+         vector_indexing_and_assignments_use_checked_runtime},
+        {"malformed vector state has no partial output",
+         malformed_vector_state_has_no_partial_output},
         {"unsupported local shapes",
          unsupported_local_shapes_have_no_partial_output},
         {"string IO and builtin shadowing",

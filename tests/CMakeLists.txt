@@ -280,6 +280,20 @@ tpp_add_cli_integration_test(
     ARGS --emit-cpp "${codegen_strings_source}"
 )
 
+set(codegen_vectors_source
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_vectors.tpp"
+)
+set(codegen_vectors_expected
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_vectors.expected.cpp"
+)
+
+tpp_add_cli_integration_test(
+    emit_cpp_vectors
+    EXIT_CODE 0
+    STDOUT_FILE "${codegen_vectors_expected}"
+    ARGS --emit-cpp "${codegen_vectors_source}"
+)
+
 tpp_add_cli_integration_test(
     conflicting_output_modes
     EXIT_CODE 2
@@ -577,6 +591,34 @@ if(TPP_GXX_EXECUTABLE)
             "-DRUNTIME_INCLUDE=${PROJECT_SOURCE_DIR}/runtime/include"
             "-DSTDIN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_string_input.stdin"
             "-DEXPECTED_STDOUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_string_input.expected.stdout"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCodegenExecution.cmake"
+    )
+
+    add_test(
+        NAME codegen.execute.vectors
+        COMMAND
+            "${CMAKE_COMMAND}"
+            "-DCLI=$<TARGET_FILE:pseudo>"
+            "-DINPUT=${codegen_vectors_source}"
+            "-DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/codegen-vectors.cpp"
+            "-DEXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/codegen-vectors-exe"
+            "-DCXX=${TPP_GXX_EXECUTABLE}"
+            "-DRUNTIME_INCLUDE=${PROJECT_SOURCE_DIR}/runtime/include"
+            "-DEXPECTED_STDOUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_vectors.expected.stdout"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCodegenExecution.cmake"
+    )
+
+    add_test(
+        NAME codegen.execute.nested_vectors
+        COMMAND
+            "${CMAKE_COMMAND}"
+            "-DCLI=$<TARGET_FILE:pseudo>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_nested_vectors.tpp"
+            "-DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/codegen-nested-vectors.cpp"
+            "-DEXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/codegen-nested-vectors-exe"
+            "-DCXX=${TPP_GXX_EXECUTABLE}"
+            "-DRUNTIME_INCLUDE=${PROJECT_SOURCE_DIR}/runtime/include"
+            "-DEXPECTED_STDOUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_nested_vectors.expected.stdout"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCodegenExecution.cmake"
     )
 endif()

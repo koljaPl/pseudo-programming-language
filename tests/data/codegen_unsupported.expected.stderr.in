@@ -1,3 +1,3 @@
-@codegen_unsupported_source@:1:14: error: C++ code generation only supports local variables of type 'string' or 'char' yet
+@codegen_unsupported_source@:1:14: error: C++ code generation only supports local variables of type 'string', 'char', or 'vector<T>' yet
   1 | int main() { int value = 0; }
     |              ^~~
