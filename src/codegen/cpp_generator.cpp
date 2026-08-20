@@ -1809,5 +1809,5 @@ std::optional<std::string> generate_cpp(
 
     return CppGenerator{context, diagnostics}.generate(program);
 }
-
+    
 }
