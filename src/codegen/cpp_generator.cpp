@@ -337,7 +337,7 @@ private:
                 report(
                     span,
                     "C++ code generation only supports references to local "
-                    "string, char, or vector variables in the current "
+                    "int, string, char, or vector variables in the current "
                     "function yet");
                 return std::nullopt;
             }
@@ -416,7 +416,8 @@ private:
 
     [[nodiscard]] bool is_supported_local_type(const TypeId type) const noexcept
     {
-        return type == context_.types.string_type()
+        return type == context_.types.integer_type()
+            || type == context_.types.string_type()
             || type == context_.types.character_type()
             || is_vector_type(type);
     }
@@ -860,14 +861,14 @@ private:
             report(
                 declaration.type.span,
                 "C++ code generation only supports local variables of type "
-                "'string', 'char', or 'vector<T>' yet");
+                "'int', 'string', 'char', or 'vector<T>' yet");
             return;
         }
         if (declaration.initializer == nullptr) {
             report(
                 span,
-                "C++ code generation only supports initialized local string, "
-                "char, or vector variables yet");
+                "C++ code generation only supports initialized local int, "
+                "string, char, or vector variables yet");
             return;
         }
 
@@ -1552,8 +1553,8 @@ private:
             && !current_parameter_ids_.contains(id->value)) {
             report(
                 span,
-                "C++ code generation only supports string, char, or vector "
-                "local identifier expressions yet");
+                "C++ code generation only supports int, string, char, or "
+                "vector local identifier expressions yet");
             return false;
         }
         output_ << storage->generated_name;
@@ -1676,11 +1677,6 @@ private:
                 "expression statement");
             return false;
         case BuiltinFunctionKind::read_int:
-            report(
-                call.callee != nullptr ? call.callee->span : span,
-                "C++ code generation does not support builtin 'read_int' "
-                "yet");
-            return false;
         case BuiltinFunctionKind::read_string:
         case BuiltinFunctionKind::read_char:
         case BuiltinFunctionKind::len:
@@ -1733,6 +1729,9 @@ private:
 
         uses_runtime_ = true;
         switch (builtin) {
+        case BuiltinFunctionKind::read_int:
+            output_ << "tpp::runtime::read_int()";
+            return true;
         case BuiltinFunctionKind::read_string:
             output_ << "tpp::runtime::read_string()";
             return true;
@@ -1761,7 +1760,6 @@ private:
             output_ << ')';
             return true;
         case BuiltinFunctionKind::print:
-        case BuiltinFunctionKind::read_int:
             break;
         }
 
