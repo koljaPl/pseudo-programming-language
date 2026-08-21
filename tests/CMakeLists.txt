@@ -308,6 +308,20 @@ tpp_add_cli_integration_test(
     ARGS --emit-cpp "${codegen_runtime_io_source}"
 )
 
+set(codegen_loops_source
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_loops.tpp"
+)
+set(codegen_loops_expected
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_loops.expected.cpp"
+)
+
+tpp_add_cli_integration_test(
+    emit_cpp_loops
+    EXIT_CODE 0
+    STDOUT_FILE "${codegen_loops_expected}"
+    ARGS --emit-cpp "${codegen_loops_source}"
+)
+
 tpp_add_cli_integration_test(
     conflicting_output_modes
     EXIT_CODE 2
@@ -663,6 +677,48 @@ if(TPP_GXX_EXECUTABLE)
             "-DRUNTIME_INCLUDE=${PROJECT_SOURCE_DIR}/runtime/include"
             "-DSTDIN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_runtime_io.stdin"
             "-DEXPECTED_STDOUT_HEX=2d370a68656c6c6f0a510a380a747275650a66616c73650a4100420a"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCodegenExecution.cmake"
+    )
+
+    add_test(
+        NAME codegen.execute.loop_ranges
+        COMMAND
+            "${CMAKE_COMMAND}"
+            "-DCLI=$<TARGET_FILE:pseudo>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_loop_ranges.tpp"
+            "-DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/codegen-loop-ranges.cpp"
+            "-DEXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/codegen-loop-ranges-exe"
+            "-DCXX=${TPP_GXX_EXECUTABLE}"
+            "-DRUNTIME_INCLUDE=${PROJECT_SOURCE_DIR}/runtime/include"
+            "-DEXPECTED_STDOUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_loop_ranges.expected.stdout"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCodegenExecution.cmake"
+    )
+
+    add_test(
+        NAME codegen.execute.nested_loops
+        COMMAND
+            "${CMAKE_COMMAND}"
+            "-DCLI=$<TARGET_FILE:pseudo>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_nested_loops.tpp"
+            "-DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/codegen-nested-loops.cpp"
+            "-DEXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/codegen-nested-loops-exe"
+            "-DCXX=${TPP_GXX_EXECUTABLE}"
+            "-DRUNTIME_INCLUDE=${PROJECT_SOURCE_DIR}/runtime/include"
+            "-DEXPECTED_STDOUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_nested_loops.expected.stdout"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCodegenExecution.cmake"
+    )
+
+    add_test(
+        NAME codegen.execute.foreach
+        COMMAND
+            "${CMAKE_COMMAND}"
+            "-DCLI=$<TARGET_FILE:pseudo>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_foreach.tpp"
+            "-DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/codegen-foreach.cpp"
+            "-DEXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/codegen-foreach-exe"
+            "-DCXX=${TPP_GXX_EXECUTABLE}"
+            "-DRUNTIME_INCLUDE=${PROJECT_SOURCE_DIR}/runtime/include"
+            "-DEXPECTED_STDOUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_foreach.expected.stdout"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCodegenExecution.cmake"
     )
 endif()
