@@ -17,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <variant>
@@ -293,6 +294,20 @@ private:
         diagnostics_.error(span, std::move(message));
     }
 
+    void emit_indentation()
+    {
+        for (std::size_t level = 0; level < indentation_level_; ++level) {
+            output_ << "    ";
+        }
+    }
+
+    void emit_scoped_body(const Block& body)
+    {
+        auto enclosing_variables = current_variable_types_;
+        emit_body(body);
+        current_variable_types_ = std::move(enclosing_variables);
+    }
+
     [[nodiscard]] const Symbol* symbol(
         const SymbolId id,
         const SourceSpan span,
@@ -333,7 +348,8 @@ private:
         }
 
         if (const auto* variable = std::get_if<VariableSymbol>(&entry->data)) {
-            if (!current_variable_ids_.contains(id.value)) {
+            const auto active = current_variable_types_.find(id.value);
+            if (active == current_variable_types_.end()) {
                 report(
                     span,
                     "C++ code generation only supports references to local "
@@ -341,14 +357,16 @@ private:
                     "function yet");
                 return std::nullopt;
             }
-            if (!variable->type.has_value()) {
+            if (variable->type.has_value()
+                && *variable->type != active->second) {
                 report(
                     span,
-                    "malformed semantic state: local variable has no type");
+                    "malformed semantic state: active local variable type "
+                    "does not match its symbol");
                 return std::nullopt;
             }
             return StorageReference{
-                .type = *variable->type,
+                .type = active->second,
                 .generated_name = generated_name("tpp_variable_", id),
             };
         }
@@ -770,7 +788,9 @@ private:
 
         current_function_ = &entry;
         current_parameter_ids_.clear();
-        current_variable_ids_.clear();
+        current_variable_types_.clear();
+        indentation_level_ = 1;
+        loop_depth_ = 0;
         for (const auto& parameter : entry.declaration->parameters) {
             if (const auto id = context_.declarations.symbol_for(parameter)) {
                 current_parameter_ids_.insert(id->value);
@@ -782,7 +802,9 @@ private:
         }
         output_ << "}\n";
         current_parameter_ids_.clear();
-        current_variable_ids_.clear();
+        current_variable_types_.clear();
+        indentation_level_ = 0;
+        loop_depth_ = 0;
         current_function_ = nullptr;
     }
 
@@ -897,14 +919,25 @@ private:
             return;
         }
 
-        output_ << "    " << *variable_type << ' '
+        if (current_variable_types_.contains(declaration_id->value)) {
+            report(
+                declaration.name_span,
+                "malformed semantic state: local variable declaration "
+                "symbol is already active");
+            return;
+        }
+
+        emit_indentation();
+        output_ << *variable_type << ' '
                 << generated_name("tpp_variable_", *declaration_id) << " = ";
         if (!emit_expression(*declaration.initializer)) {
             output_ << ";\n";
             return;
         }
         output_ << ";\n";
-        current_variable_ids_.insert(declaration_id->value);
+        current_variable_types_.emplace(
+            declaration_id->value,
+            *variable->type);
     }
 
     [[nodiscard]] std::optional<std::vector<TypeId>>
@@ -1114,7 +1147,7 @@ private:
             return;
         }
 
-        output_ << "    ";
+        emit_indentation();
         if (!emit_assignment_target(
                 statement.target,
                 *storage,
@@ -1168,7 +1201,7 @@ private:
             }
         }
 
-        output_ << "    ";
+        emit_indentation();
         if (!emit_expression(*statement.expression)) {
             output_ << '\n';
             return;
@@ -1188,18 +1221,322 @@ private:
             "C++ code generation does not support while statements yet");
     }
 
-    void emit_statement_node(const SourceSpan span, const ForRangeStatement&)
+    void emit_statement_node(
+        const SourceSpan span,
+        const ForRangeStatement& statement)
     {
-        report(
-            span,
-            "C++ code generation does not support for-range statements yet");
+        if (statement.begin == nullptr || statement.end == nullptr) {
+            report(
+                span,
+                "malformed AST: for-range statement is missing a bound");
+            return;
+        }
+        if (statement.body == nullptr) {
+            report(
+                span,
+                "malformed AST: for-range statement is missing a body");
+            return;
+        }
+
+        const auto binding_id =
+            context_.declarations.symbol_for(statement);
+        if (!binding_id.has_value()) {
+            report(
+                statement.variable_span,
+                "malformed semantic state: for-range binding has no symbol");
+            return;
+        }
+        const auto* entry = symbol(
+            *binding_id,
+            statement.variable_span,
+            "for-range binding");
+        if (entry == nullptr) {
+            return;
+        }
+        const auto* variable = std::get_if<VariableSymbol>(&entry->data);
+        if (variable == nullptr) {
+            report(
+                statement.variable_span,
+                "malformed semantic state: for-range binding symbol is not "
+                "a variable");
+            return;
+        }
+        if (!variable->type.has_value()
+            || *variable->type != context_.types.integer_type()) {
+            report(
+                statement.variable_span,
+                "malformed semantic state: for-range binding does not have "
+                "type 'int'");
+            return;
+        }
+        if (current_variable_types_.contains(binding_id->value)) {
+            report(
+                statement.variable_span,
+                "malformed semantic state: for-range binding is already "
+                "active");
+            return;
+        }
+
+        const auto begin_type = context_.type_info.type_of(*statement.begin);
+        const auto end_type = context_.type_info.type_of(*statement.end);
+        if (!begin_type.has_value()
+            || *begin_type != context_.types.integer_type()) {
+            report(
+                statement.begin->span,
+                "malformed semantic state: for-range begin bound does not "
+                "have type 'int'");
+            return;
+        }
+        if (!end_type.has_value()
+            || *end_type != context_.types.integer_type()) {
+            report(
+                statement.end->span,
+                "malformed semantic state: for-range end bound does not have "
+                "type 'int'");
+            return;
+        }
+
+        switch (statement.operator_kind) {
+        case RangeOperator::exclusive:
+        case RangeOperator::inclusive:
+            break;
+        default:
+            report(span, "malformed AST: unknown range operator");
+            return;
+        }
+
+        const auto binding_name =
+            generated_name("tpp_variable_", *binding_id);
+        const auto begin_name =
+            generated_name("tpp_range_begin_", *binding_id);
+        const auto end_name =
+            generated_name("tpp_range_end_", *binding_id);
+        const auto cursor_name =
+            generated_name("tpp_range_cursor_", *binding_id);
+        const auto active_name =
+            generated_name("tpp_range_active_", *binding_id);
+
+        emit_indentation();
+        output_ << "{\n";
+        ++indentation_level_;
+
+        emit_indentation();
+        output_ << "const std::int64_t " << begin_name << " = ";
+        (void)emit_expression(*statement.begin);
+        output_ << ";\n";
+
+        emit_indentation();
+        output_ << "const std::int64_t " << end_name << " = ";
+        (void)emit_expression(*statement.end);
+        output_ << ";\n";
+
+        if (statement.operator_kind == RangeOperator::inclusive) {
+            emit_indentation();
+            output_ << "bool " << active_name << " = " << begin_name
+                    << " <= " << end_name << ";\n";
+        }
+
+        emit_indentation();
+        output_ << "for (std::int64_t " << cursor_name << " = "
+                << begin_name << "; ";
+        if (statement.operator_kind == RangeOperator::exclusive) {
+            output_ << cursor_name << " < " << end_name << "; ++"
+                    << cursor_name;
+        } else {
+            output_ << active_name << "; " << active_name << " = "
+                    << cursor_name << " != " << end_name << ", "
+                    << cursor_name << " += " << active_name
+                    << " ? std::int64_t{1} : std::int64_t{0}";
+        }
+        output_ << ")\n";
+        emit_indentation();
+        output_ << "{\n";
+        ++indentation_level_;
+
+        emit_indentation();
+        output_ << "[[maybe_unused]] std::int64_t " << binding_name << " = "
+                << cursor_name << ";\n";
+
+        current_variable_types_.emplace(
+            binding_id->value,
+            context_.types.integer_type());
+        ++loop_depth_;
+        emit_scoped_body(*statement.body);
+        --loop_depth_;
+        current_variable_types_.erase(binding_id->value);
+
+        --indentation_level_;
+        emit_indentation();
+        output_ << "}\n";
+        --indentation_level_;
+        emit_indentation();
+        output_ << "}\n";
     }
 
-    void emit_statement_node(const SourceSpan span, const ForEachStatement&)
+    void emit_statement_node(
+        const SourceSpan span,
+        const ForEachStatement& statement)
     {
-        report(
-            span,
-            "C++ code generation does not support for-each statements yet");
+        if (statement.iterable == nullptr) {
+            report(
+                span,
+                "malformed AST: for-each statement is missing an iterable");
+            return;
+        }
+        if (statement.body == nullptr) {
+            report(
+                span,
+                "malformed AST: for-each statement is missing a body");
+            return;
+        }
+
+        const auto binding_id =
+            context_.declarations.symbol_for(statement);
+        if (!binding_id.has_value()) {
+            report(
+                statement.variable_span,
+                "malformed semantic state: for-each binding has no symbol");
+            return;
+        }
+        const auto* entry = symbol(
+            *binding_id,
+            statement.variable_span,
+            "for-each binding");
+        if (entry == nullptr) {
+            return;
+        }
+        const auto* variable = std::get_if<VariableSymbol>(&entry->data);
+        if (variable == nullptr) {
+            report(
+                statement.variable_span,
+                "malformed semantic state: for-each binding symbol is not a "
+                "variable");
+            return;
+        }
+        if (variable->type.has_value()) {
+            report(
+                statement.variable_span,
+                "malformed semantic state: for-each binding unexpectedly "
+                "has a declared type");
+            return;
+        }
+        if (current_variable_types_.contains(binding_id->value)) {
+            report(
+                statement.variable_span,
+                "malformed semantic state: for-each binding is already "
+                "active");
+            return;
+        }
+
+        const auto iterable_type =
+            context_.type_info.type_of(*statement.iterable);
+        if (!iterable_type.has_value()) {
+            report(
+                statement.iterable->span,
+                "malformed semantic state: for-each iterable has no type");
+            return;
+        }
+        const auto inferred_type =
+            context_.type_info.inferred_type(*binding_id);
+        if (!inferred_type.has_value()) {
+            report(
+                statement.variable_span,
+                "malformed semantic state: for-each binding has no inferred "
+                "type");
+            return;
+        }
+
+        auto expected_binding_type = std::optional<TypeId>{};
+        if (*iterable_type == context_.types.string_type()) {
+            expected_binding_type = context_.types.character_type();
+        } else {
+            const auto descriptor = context_.types.lookup(*iterable_type);
+            const auto* vector = descriptor.has_value()
+                ? std::get_if<SemanticVectorType>(&*descriptor)
+                : nullptr;
+            if (vector == nullptr) {
+                report(
+                    statement.iterable->span,
+                    "malformed semantic state: for-each iterable is not a "
+                    "string or vector");
+                return;
+            }
+            expected_binding_type = vector->element_type;
+        }
+        if (*inferred_type != *expected_binding_type) {
+            report(
+                statement.variable_span,
+                "malformed semantic state: for-each inferred binding type "
+                "does not match its iterable");
+            return;
+        }
+
+        const auto iterable_cpp_type = cpp_type(
+            *iterable_type,
+            statement.iterable->span,
+            "for-each iterable");
+        const auto binding_cpp_type = cpp_type(
+            *inferred_type,
+            statement.variable_span,
+            "for-each binding");
+        if (!iterable_cpp_type.has_value()
+            || !binding_cpp_type.has_value()
+            || *iterable_cpp_type == "void"
+            || *binding_cpp_type == "void") {
+            if (iterable_cpp_type.has_value()
+                && *iterable_cpp_type == "void") {
+                report(
+                    statement.iterable->span,
+                    "malformed semantic state: for-each iterable has type "
+                    "'void'");
+            }
+            if (binding_cpp_type.has_value()
+                && *binding_cpp_type == "void") {
+                report(
+                    statement.variable_span,
+                    "malformed semantic state: for-each binding has type "
+                    "'void'");
+            }
+            return;
+        }
+
+        const auto iterable_name =
+            generated_name("tpp_iterable_", *binding_id);
+        const auto binding_name =
+            generated_name("tpp_variable_", *binding_id);
+
+        emit_indentation();
+        output_ << "{\n";
+        ++indentation_level_;
+
+        emit_indentation();
+        output_ << "const " << *iterable_cpp_type << ' ' << iterable_name
+                << " = ";
+        (void)emit_expression(*statement.iterable);
+        output_ << ";\n";
+
+        emit_indentation();
+        output_ << "for ([[maybe_unused]] " << *binding_cpp_type << ' '
+                << binding_name
+                << " : " << iterable_name << ")\n";
+        emit_indentation();
+        output_ << "{\n";
+        ++indentation_level_;
+
+        current_variable_types_.emplace(
+            binding_id->value,
+            *inferred_type);
+        ++loop_depth_;
+        emit_scoped_body(*statement.body);
+        --loop_depth_;
+        current_variable_types_.erase(binding_id->value);
+
+        --indentation_level_;
+        emit_indentation();
+        output_ << "}\n";
+        --indentation_level_;
+        emit_indentation();
+        output_ << "}\n";
     }
 
     void emit_statement_node(
@@ -1228,7 +1565,8 @@ private:
                           "value");
                 return;
             }
-            output_ << "    return;\n";
+            emit_indentation();
+            output_ << "return;\n";
             return;
         }
 
@@ -1256,7 +1594,8 @@ private:
         }
 
         if (current_function_->is_main) {
-            output_ << "    return static_cast<int>(";
+            emit_indentation();
+            output_ << "return static_cast<int>(";
             if (!emit_expression(*statement.value)) {
                 output_ << ");\n";
                 return;
@@ -1265,7 +1604,8 @@ private:
             return;
         }
 
-        output_ << "    return ";
+        emit_indentation();
+        output_ << "return ";
         if (!emit_expression(*statement.value)) {
             output_ << ";\n";
             return;
@@ -1275,19 +1615,53 @@ private:
 
     void emit_statement_node(const SourceSpan span, const BreakStatement&)
     {
-        report(span, "C++ code generation does not support break statements yet");
+        if (loop_depth_ == 0) {
+            report(
+                span,
+                "malformed semantic state: break statement is outside a "
+                "loop");
+            return;
+        }
+        emit_indentation();
+        output_ << "break;\n";
     }
 
     void emit_statement_node(const SourceSpan span, const ContinueStatement&)
     {
-        report(
-            span,
-            "C++ code generation does not support continue statements yet");
+        if (loop_depth_ == 0) {
+            report(
+                span,
+                "malformed semantic state: continue statement is outside a "
+                "loop");
+            return;
+        }
+        emit_indentation();
+        output_ << "continue;\n";
     }
 
-    void emit_statement_node(const SourceSpan span, const BlockStatement&)
+    void emit_statement_node(
+        const SourceSpan span,
+        const BlockStatement& statement)
     {
-        report(span, "C++ code generation does not support nested blocks yet");
+        if (loop_depth_ == 0) {
+            report(
+                span,
+                "C++ code generation does not support nested blocks outside "
+                "loops yet");
+            return;
+        }
+        if (statement.block == nullptr) {
+            report(span, "malformed AST: nested block is missing its body");
+            return;
+        }
+
+        emit_indentation();
+        output_ << "{\n";
+        ++indentation_level_;
+        emit_scoped_body(*statement.block);
+        --indentation_level_;
+        emit_indentation();
+        output_ << "}\n";
     }
 
     [[nodiscard]] const CallExpression* unwrap_call(
@@ -1411,7 +1785,8 @@ private:
             return;
         }
 
-        output_ << "    std::cout << std::boolalpha << ";
+        emit_indentation();
+        output_ << "std::cout << std::boolalpha << ";
         if (!emit_expression(*call.arguments.front())) {
             output_ << '\n';
             return;
@@ -1549,7 +1924,7 @@ private:
                 "its symbol");
             return false;
         }
-        if (!is_supported_local_type(storage->type)
+        if (!current_variable_types_.contains(id->value)
             && !current_parameter_ids_.contains(id->value)) {
             report(
                 span,
@@ -2141,7 +2516,9 @@ private:
     std::optional<SymbolId> main_symbol_;
     const FunctionEntry* current_function_{nullptr};
     std::unordered_set<std::size_t> current_parameter_ids_;
-    std::unordered_set<std::size_t> current_variable_ids_;
+    std::unordered_map<std::size_t, TypeId> current_variable_types_;
+    std::size_t indentation_level_{0};
+    std::size_t loop_depth_{0};
     bool uses_vector_{false};
     bool uses_runtime_{false};
 };
