@@ -6,12 +6,35 @@ foreach(
     EXECUTABLE
     CXX
     RUNTIME_INCLUDE
-    EXPECTED_STDOUT_FILE
 )
     if(NOT DEFINED ${required_variable})
         message(FATAL_ERROR "${required_variable} is required")
     endif()
 endforeach()
+
+set(has_expected_stdout_file FALSE)
+if(DEFINED EXPECTED_STDOUT_FILE AND NOT EXPECTED_STDOUT_FILE STREQUAL "")
+    set(has_expected_stdout_file TRUE)
+endif()
+
+set(has_expected_stdout_hex FALSE)
+if(DEFINED EXPECTED_STDOUT_HEX AND NOT EXPECTED_STDOUT_HEX STREQUAL "")
+    set(has_expected_stdout_hex TRUE)
+endif()
+
+if(has_expected_stdout_file AND has_expected_stdout_hex)
+    message(
+        FATAL_ERROR
+        "only one of EXPECTED_STDOUT_FILE or EXPECTED_STDOUT_HEX may be set"
+    )
+endif()
+
+if(NOT has_expected_stdout_file AND NOT has_expected_stdout_hex)
+    message(
+        FATAL_ERROR
+        "EXPECTED_STDOUT_FILE or EXPECTED_STDOUT_HEX is required"
+    )
+endif()
 
 execute_process(
     COMMAND "${CLI}" --emit-cpp "${INPUT}"
@@ -100,18 +123,30 @@ if(NOT stderr_size EQUAL 0)
     )
 endif()
 
-execute_process(
-    COMMAND
-        "${CMAKE_COMMAND}" -E compare_files
-        "${EXPECTED_STDOUT_FILE}"
-        "${actual_stdout}"
-    RESULT_VARIABLE compare_exit
-)
-
-if(NOT compare_exit EQUAL 0)
-    message(
-        FATAL_ERROR
-        "generated executable stdout differs from "
-        "${EXPECTED_STDOUT_FILE}"
+if(has_expected_stdout_file)
+    execute_process(
+        COMMAND
+            "${CMAKE_COMMAND}" -E compare_files
+            "${EXPECTED_STDOUT_FILE}"
+            "${actual_stdout}"
+        RESULT_VARIABLE compare_exit
     )
+
+    if(NOT compare_exit EQUAL 0)
+        message(
+            FATAL_ERROR
+            "generated executable stdout differs from "
+            "${EXPECTED_STDOUT_FILE}"
+        )
+    endif()
+else()
+    file(READ "${actual_stdout}" actual_stdout_hex HEX)
+    if(NOT actual_stdout_hex STREQUAL EXPECTED_STDOUT_HEX)
+        message(
+            FATAL_ERROR
+            "generated executable stdout differs from expected hex\n"
+            "expected: ${EXPECTED_STDOUT_HEX}\n"
+            "actual:   ${actual_stdout_hex}"
+        )
+    endif()
 endif()

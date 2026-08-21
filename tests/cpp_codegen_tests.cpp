@@ -1010,22 +1010,29 @@ void unsupported_local_shapes_have_no_partial_output()
         std::string_view diagnostic;
     };
 
-    constexpr std::array<Case, 5> cases{
+    constexpr std::array<Case, 7> cases{
         Case{
             "int main() { string text; return 0; }",
-            "initialized local string, char, or vector"},
+            "initialized local int, string, char, or vector"},
         Case{
             "int main() { char value; return 0; }",
-            "initialized local string, char, or vector"},
+            "initialized local int, string, char, or vector"},
         Case{
             "int main() { vector<int> values; return 0; }",
-            "initialized local string, char, or vector"},
+            "initialized local int, string, char, or vector"},
         Case{
-            "int main() { int value = 1; return 0; }",
-            "local variables of type 'string', 'char', or 'vector<T>'"},
+            "int main() { int value; return 0; }",
+            "initialized local int, string, char, or vector"},
         Case{
             "int main() { bool value = true; return 0; }",
-            "local variables of type 'string', 'char', or 'vector<T>'"},
+            "local variables of type 'int', 'string', 'char', or "
+            "'vector<T>'"},
+        Case{
+            "int main() { int value = 1; value = 2; return value; }",
+            "only supports '=' for string, char, and vector assignments"},
+        Case{
+            "int main() { int value = 1; value += 2; return value; }",
+            "only supports '=' for string, char, and vector assignments"},
     };
 
     for (const auto& test_case : cases) {
@@ -1040,15 +1047,19 @@ void unsupported_local_shapes_have_no_partial_output()
     }
 }
 
-void string_io_and_builtin_shadowing_use_resolutions()
+void runtime_io_and_builtin_shadowing_use_resolutions()
 {
-    const auto builtins = generate_source(R"(string input_text() {
+    const auto builtins = generate_source(R"(int input_number() {
+    return read_int();
+}
+string input_text() {
     return read_string();
 }
 char input_char() {
     return read_char();
 }
 int main() {
+    print(input_number());
     print(input_text());
     print(input_char());
     return 0;
@@ -1056,12 +1067,18 @@ int main() {
 )");
     tpp::test::check_contains(
         builtins,
+        "return tpp::runtime::read_int();");
+    tpp::test::check_contains(
+        builtins,
         "return tpp::runtime::read_string();");
     tpp::test::check_contains(
         builtins,
         "return tpp::runtime::read_char();");
 
-    const auto shadowed = generate_source(R"(int len(string value) {
+    const auto shadowed = generate_source(R"(int read_int() {
+    return 17;
+}
+int len(string value) {
     return 7;
 }
 string substring(string value, int left, int right) {
@@ -1074,6 +1091,7 @@ char read_char() {
     return 's';
 }
 int main() {
+    print(read_int());
     print(len("x"));
     print(substring("abc", 0, 1));
     print(read_string());
@@ -1082,6 +1100,8 @@ int main() {
 }
 )");
     TPP_CHECK(
+        shadowed.find("tpp::runtime::read_int") == std::string::npos);
+    TPP_CHECK(
         shadowed.find("tpp::runtime::len") == std::string::npos);
     TPP_CHECK(
         shadowed.find("tpp::runtime::substring") == std::string::npos);
@@ -1089,9 +1109,109 @@ int main() {
         shadowed.find("tpp::runtime::read_string") == std::string::npos);
     TPP_CHECK(
         shadowed.find("tpp::runtime::read_char") == std::string::npos);
+    TPP_CHECK(
+        shadowed.find("#include <pseudo/runtime.hpp>")
+        == std::string::npos);
     tpp::test::check_contains(
         shadowed,
-        "tpp_function_0(std::string{\"x\", 1})");
+        "tpp_function_1(std::string{\"x\", 1})");
+}
+
+void scalar_runtime_io_and_initialized_int_storage_are_supported()
+{
+    const auto output = generate_source(R"(int main() {
+    int number = read_int();
+    string word = read_string();
+    char letter = read_char();
+    print(number);
+    print(true);
+    print(letter);
+    print(word);
+    print("A\0B");
+    return number;
+}
+)");
+
+    tpp::test::check_contains(
+        output,
+        "#include <pseudo/runtime.hpp>\n");
+    tpp::test::check_contains(
+        output,
+        "std::int64_t tpp_variable_");
+    tpp::test::check_contains(
+        output,
+        " = tpp::runtime::read_int();");
+    tpp::test::check_contains(
+        output,
+        " = tpp::runtime::read_string();");
+    tpp::test::check_contains(
+        output,
+        " = tpp::runtime::read_char();");
+    tpp::test::check_contains(
+        output,
+        "std::cout << std::boolalpha << true << '\\n';");
+    tpp::test::check_contains(
+        output,
+        "std::cout << std::boolalpha << std::string{\"A\\000B\", 3} "
+        "<< '\\n';");
+    tpp::test::check_contains(
+        output,
+        "return static_cast<int>(tpp_variable_");
+
+    const auto print_only = generate_source(
+        "int main() { print(false); return 0; }");
+    TPP_CHECK(
+        print_only.find("#include <pseudo/runtime.hpp>")
+        == std::string::npos);
+}
+
+void malformed_read_int_state_has_no_partial_output()
+{
+    {
+        CheckedProgram checked{R"(int main() {
+    int value = read_int();
+    print(value);
+    return value;
+}
+)"};
+        auto& body = *require_main(checked.program()).body;
+        auto& declaration = require_variant<tpp::VariableDeclaration>(
+            require_statement(body.items.front()).node);
+        TPP_CHECK(declaration.initializer != nullptr);
+        auto& call = require_variant<tpp::CallExpression>(
+            declaration.initializer->node);
+        call.arguments.push_back(nullptr);
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!generate(checked, diagnostics).has_value());
+        TPP_CHECK(diagnostics.has_errors());
+        check_has_diagnostic(
+            diagnostics,
+            "builtin 'read_int' has an unexpected number of arguments");
+    }
+
+    {
+        const CheckedProgram checked{R"(int main() {
+    int value = read_int();
+    return value;
+}
+)"};
+        const tpp::ResolutionInfo empty_resolutions;
+        const auto context = tpp::CppGenerationContext{
+            .types = checked.types(),
+            .symbols = checked.symbols(),
+            .declarations = checked.declarations(),
+            .resolutions = empty_resolutions,
+            .type_info = checked.type_info(),
+        };
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!tpp::generate_cpp(
+            checked.program(),
+            context,
+            diagnostics).has_value());
+        check_has_diagnostic(diagnostics, "callee has no resolution");
+    }
 }
 
 void missing_and_invalid_main_are_diagnosed()
@@ -1219,8 +1339,8 @@ void unsupported_program_shapes_report_without_partial_output()
             "int global = 1; int main() { return 0; }",
             "global variables"},
         Case{
-            "int helper() { int local = 1; return local; } "
-            "int main() { return helper(); }",
+            "void helper() { bool local = true; } "
+            "int main() { helper(); return 0; }",
             "local variables"},
         Case{
             "int outer() { int inner() { return 1; } return inner(); } "
@@ -1252,11 +1372,12 @@ void unsupported_program_shapes_report_without_partial_output()
 void unsupported_body_errors_are_collected_independently()
 {
     const CheckedProgram checked{R"(int helper(int parameter) {
-    int local = parameter;
+    bool local = true;
+    print(local);
     if true {}
     while false {}
     { print(parameter); }
-    return local;
+    return parameter;
 }
 int main() { return 0; }
 )"};
@@ -1273,7 +1394,7 @@ int main() { return 0; }
     check_has_diagnostic(diagnostics, "references to local");
 }
 
-void remaining_unsupported_builtin_is_resolved_semantically()
+void read_int_expression_statement_uses_runtime_lowering()
 {
     const CheckedProgram checked{R"(void use_builtin() {
     read_int();
@@ -1282,9 +1403,13 @@ int main() { return 0; }
 )"};
     tpp::DiagnosticEngine diagnostics;
 
-    TPP_CHECK(!generate(checked, diagnostics).has_value());
-    TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{1});
-    check_has_diagnostic(diagnostics, "read_int");
+    const auto generated = generate(checked, diagnostics);
+
+    TPP_CHECK(generated.has_value());
+    TPP_CHECK(!diagnostics.has_errors());
+    tpp::test::check_contains(
+        *generated,
+        "    tpp::runtime::read_int();\n");
 }
 
 void malformed_ast_reports_instead_of_crashing()
@@ -1627,8 +1752,12 @@ int main()
          malformed_vector_state_has_no_partial_output},
         {"unsupported local shapes",
          unsupported_local_shapes_have_no_partial_output},
-        {"string IO and builtin shadowing",
-         string_io_and_builtin_shadowing_use_resolutions},
+        {"runtime IO and builtin shadowing",
+         runtime_io_and_builtin_shadowing_use_resolutions},
+        {"scalar runtime IO and initialized int storage",
+         scalar_runtime_io_and_initialized_int_storage_are_supported},
+        {"malformed read_int state has no partial output",
+         malformed_read_int_state_has_no_partial_output},
         {"missing and invalid main", missing_and_invalid_main_are_diagnosed},
         {"calls to main", calls_to_main_are_rejected_without_partial_output},
         {"duplicate main", duplicate_main_is_rejected_before_emission},
@@ -1636,8 +1765,8 @@ int main()
          unsupported_program_shapes_report_without_partial_output},
         {"independent unsupported body errors",
          unsupported_body_errors_are_collected_independently},
-        {"remaining unsupported builtin",
-         remaining_unsupported_builtin_is_resolved_semantically},
+        {"read_int expression statement",
+         read_int_expression_statement_uses_runtime_lowering},
         {"malformed AST", malformed_ast_reports_instead_of_crashing},
         {"malformed semantic context",
          malformed_semantic_context_is_diagnosed},

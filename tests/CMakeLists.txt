@@ -294,6 +294,20 @@ tpp_add_cli_integration_test(
     ARGS --emit-cpp "${codegen_vectors_source}"
 )
 
+set(codegen_runtime_io_source
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_runtime_io.tpp"
+)
+set(codegen_runtime_io_expected
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_runtime_io.expected.cpp"
+)
+
+tpp_add_cli_integration_test(
+    emit_cpp_runtime_io
+    EXIT_CODE 0
+    STDOUT_FILE "${codegen_runtime_io_expected}"
+    ARGS --emit-cpp "${codegen_runtime_io_source}"
+)
+
 tpp_add_cli_integration_test(
     conflicting_output_modes
     EXIT_CODE 2
@@ -619,6 +633,36 @@ if(TPP_GXX_EXECUTABLE)
             "-DCXX=${TPP_GXX_EXECUTABLE}"
             "-DRUNTIME_INCLUDE=${PROJECT_SOURCE_DIR}/runtime/include"
             "-DEXPECTED_STDOUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_nested_vectors.expected.stdout"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCodegenExecution.cmake"
+    )
+
+    add_test(
+        NAME codegen.execute.integer_input
+        COMMAND
+            "${CMAKE_COMMAND}"
+            "-DCLI=$<TARGET_FILE:pseudo>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_integer_input.tpp"
+            "-DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/codegen-integer-input.cpp"
+            "-DEXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/codegen-integer-input-exe"
+            "-DCXX=${TPP_GXX_EXECUTABLE}"
+            "-DRUNTIME_INCLUDE=${PROJECT_SOURCE_DIR}/runtime/include"
+            "-DSTDIN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_integer_input.stdin"
+            "-DEXPECTED_STDOUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_integer_input.expected.stdout"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCodegenExecution.cmake"
+    )
+
+    add_test(
+        NAME codegen.execute.runtime_io
+        COMMAND
+            "${CMAKE_COMMAND}"
+            "-DCLI=$<TARGET_FILE:pseudo>"
+            "-DINPUT=${codegen_runtime_io_source}"
+            "-DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/codegen-runtime-io.cpp"
+            "-DEXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/codegen-runtime-io-exe"
+            "-DCXX=${TPP_GXX_EXECUTABLE}"
+            "-DRUNTIME_INCLUDE=${PROJECT_SOURCE_DIR}/runtime/include"
+            "-DSTDIN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_runtime_io.stdin"
+            "-DEXPECTED_STDOUT_HEX=2d370a68656c6c6f0a510a380a747275650a66616c73650a4100420a"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCodegenExecution.cmake"
     )
 endif()

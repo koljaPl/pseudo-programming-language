@@ -435,6 +435,19 @@ void emit_cpp_generates_vectors_and_checked_indexing()
     TPP_CHECK(result.stderr_text.empty());
 }
 
+void emit_cpp_generates_runtime_input_and_output()
+{
+    const auto input =
+        std::filesystem::path(TPP_TEST_DATA_DIR) / "codegen_runtime_io.tpp";
+    const auto result = invoke({"--emit-cpp", input.string()});
+
+    TPP_CHECK_EQ(result.exit_code, 0);
+    TPP_CHECK_EQ(
+        result.stdout_text,
+        read_data_file("codegen_runtime_io.expected.cpp"));
+    TPP_CHECK(result.stderr_text.empty());
+}
+
 void output_modes_are_mutually_exclusive()
 {
     const auto input =
@@ -495,9 +508,10 @@ void emit_cpp_is_suppressed_for_codegen_errors()
         result.stderr_text,
         input.string()
             + ":1:14: error: C++ code generation only supports local "
-              "variables of type 'string', 'char', or 'vector<T>' yet\n"
-              "  1 | int main() { int value = 0; }\n"
-              "    |              ^~~\n");
+              "variables of type 'int', 'string', 'char', or 'vector<T>' "
+              "yet\n"
+              "  1 | int main() { bool value = true; }\n"
+              "    |              ^~~~\n");
 }
 
 void emit_cpp_rejects_a_frontend_valid_empty_program()
@@ -567,6 +581,8 @@ int main()
          emit_cpp_generates_string_and_char_operations},
         {"emit C++ vectors and checked indexing",
          emit_cpp_generates_vectors_and_checked_indexing},
+        {"emit C++ runtime input and output",
+         emit_cpp_generates_runtime_input_and_output},
         {"output modes are mutually exclusive",
          output_modes_are_mutually_exclusive},
         {"emit C++ suppresses frontend errors",
