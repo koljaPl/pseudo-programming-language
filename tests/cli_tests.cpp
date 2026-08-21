@@ -448,6 +448,19 @@ void emit_cpp_generates_runtime_input_and_output()
     TPP_CHECK(result.stderr_text.empty());
 }
 
+void emit_cpp_generates_range_and_foreach_loops()
+{
+    const auto input =
+        std::filesystem::path(TPP_TEST_DATA_DIR) / "codegen_loops.tpp";
+    const auto result = invoke({"--emit-cpp", input.string()});
+
+    TPP_CHECK_EQ(result.exit_code, 0);
+    TPP_CHECK_EQ(
+        result.stdout_text,
+        read_data_file("codegen_loops.expected.cpp"));
+    TPP_CHECK(result.stderr_text.empty());
+}
+
 void output_modes_are_mutually_exclusive()
 {
     const auto input =
@@ -583,6 +596,8 @@ int main()
          emit_cpp_generates_vectors_and_checked_indexing},
         {"emit C++ runtime input and output",
          emit_cpp_generates_runtime_input_and_output},
+        {"emit C++ range and foreach loops",
+         emit_cpp_generates_range_and_foreach_loops},
         {"output modes are mutually exclusive",
          output_modes_are_mutually_exclusive},
         {"emit C++ suppresses frontend errors",

@@ -183,6 +183,13 @@ tpp::Statement& require_statement(tpp::BlockItem& item)
     return require_variant<tpp::Statement>(item);
 }
 
+template <typename Node>
+Node& require_statement_node(tpp::Block& block, const std::size_t index)
+{
+    TPP_CHECK(index < block.items.size());
+    return require_variant<Node>(require_statement(block.items[index]).node);
+}
+
 tpp::Expression& require_expression_statement(tpp::BlockItem& item)
 {
     auto& statement = require_statement(item);
@@ -239,6 +246,20 @@ void check_has_diagnostic(
     throw tpp::test::Failure{
         "expected diagnostics to contain '" + std::string{text}
         + "', got:\n" + messages};
+}
+
+std::size_t count_occurrences(
+    const std::string_view text,
+    const std::string_view needle)
+{
+    TPP_CHECK(!needle.empty());
+    std::size_t count = 0;
+    std::size_t position = 0;
+    while ((position = text.find(needle, position)) != std::string_view::npos) {
+        ++count;
+        position += needle.size();
+    }
+    return count;
 }
 
 void empty_main_has_stable_output()
@@ -1214,6 +1235,420 @@ void malformed_read_int_state_has_no_partial_output()
     }
 }
 
+void range_loops_cache_bounds_and_avoid_inclusive_overflow()
+{
+    CheckedProgram checked{R"(int begin_bound() {
+    print("begin");
+    return 2;
+}
+int end_bound() {
+    print("end");
+    return 4;
+}
+int main() {
+    for value in begin_bound()..end_bound() { print(value); }
+    for value in 5..3 { print(value); }
+    for value in 3..3 { print(value); }
+    for value in 5..=3 { print(value); }
+    for value in -2..=-1 { print(value); }
+    for value in -9223372036854775808..=-9223372036854775808 {
+        print(value);
+    }
+    for value in 9223372036854775806..9223372036854775807 {
+        print(value);
+    }
+    for value in 9223372036854775806..=9223372036854775807 {
+        print(value);
+        continue;
+    }
+    return 0;
+}
+)"};
+    auto& main = require_main(checked.program());
+    TPP_CHECK(main.body != nullptr);
+    auto& first = require_statement_node<tpp::ForRangeStatement>(
+        *main.body,
+        0);
+    auto& reversed = require_statement_node<tpp::ForRangeStatement>(
+        *main.body,
+        1);
+    auto& negative = require_statement_node<tpp::ForRangeStatement>(
+        *main.body,
+        4);
+    auto& minimum = require_statement_node<tpp::ForRangeStatement>(
+        *main.body,
+        5);
+    auto& maximum_exclusive = require_statement_node<tpp::ForRangeStatement>(
+        *main.body,
+        6);
+    auto& maximum = require_statement_node<tpp::ForRangeStatement>(
+        *main.body,
+        7);
+    auto& equal_exclusive = require_statement_node<tpp::ForRangeStatement>(
+        *main.body,
+        2);
+    auto& reversed_inclusive = require_statement_node<tpp::ForRangeStatement>(
+        *main.body,
+        3);
+    const std::array loops{
+        &first,
+        &reversed,
+        &equal_exclusive,
+        &reversed_inclusive,
+        &negative,
+        &minimum,
+        &maximum_exclusive,
+        &maximum,
+    };
+
+    tpp::DiagnosticEngine diagnostics;
+    const auto generated = generate(checked, diagnostics);
+    TPP_CHECK(generated.has_value());
+    TPP_CHECK(!diagnostics.has_errors());
+    const auto& output = *generated;
+    TPP_CHECK(output.find("#include <pseudo/runtime.hpp>") == std::string::npos);
+
+    for (const auto* loop : loops) {
+        const auto binding = checked.declarations().symbol_for(*loop);
+        TPP_CHECK(binding.has_value());
+        const auto suffix = std::to_string(binding->value);
+        tpp::test::check_contains(
+            output,
+            "const std::int64_t tpp_range_begin_" + suffix + " = ");
+        tpp::test::check_contains(
+            output,
+            "const std::int64_t tpp_range_end_" + suffix + " = ");
+        tpp::test::check_contains(
+            output,
+            "std::int64_t tpp_variable_" + suffix
+                + " = tpp_range_cursor_" + suffix + ";");
+    }
+
+    const auto begin_function = checked.declarations().symbol_for(
+        require_function(checked.program(), "begin_bound"));
+    const auto end_function = checked.declarations().symbol_for(
+        require_function(checked.program(), "end_bound"));
+    const auto first_binding = checked.declarations().symbol_for(first);
+    TPP_CHECK(begin_function.has_value());
+    TPP_CHECK(end_function.has_value());
+    TPP_CHECK(first_binding.has_value());
+    const auto begin_initialization =
+        "tpp_range_begin_" + std::to_string(first_binding->value)
+        + " = tpp_function_" + std::to_string(begin_function->value) + "();";
+    const auto end_initialization =
+        "tpp_range_end_" + std::to_string(first_binding->value)
+        + " = tpp_function_" + std::to_string(end_function->value) + "();";
+    TPP_CHECK_EQ(count_occurrences(output, begin_initialization), std::size_t{1});
+    TPP_CHECK_EQ(count_occurrences(output, end_initialization), std::size_t{1});
+    TPP_CHECK(output.find(begin_initialization) < output.find(end_initialization));
+
+    const auto maximum_binding = checked.declarations().symbol_for(maximum);
+    TPP_CHECK(maximum_binding.has_value());
+    const auto maximum_suffix = std::to_string(maximum_binding->value);
+    tpp::test::check_contains(
+        output,
+        "bool tpp_range_active_" + maximum_suffix
+            + " = tpp_range_begin_" + maximum_suffix
+            + " <= tpp_range_end_" + maximum_suffix + ";");
+    tpp::test::check_contains(
+        output,
+        "tpp_range_active_" + maximum_suffix
+            + " = tpp_range_cursor_" + maximum_suffix
+            + " != tpp_range_end_" + maximum_suffix
+            + ", tpp_range_cursor_" + maximum_suffix
+            + " += tpp_range_active_" + maximum_suffix
+            + " ? std::int64_t{1} : std::int64_t{0}");
+    TPP_CHECK(
+        output.find("tpp_range_cursor_" + maximum_suffix + " <=")
+        == std::string::npos);
+}
+
+void foreach_uses_owned_snapshots_and_typed_value_bindings()
+{
+    CheckedProgram checked{R"(vector<vector<int>> make_rows() {
+    return vector<vector<int>>(2, vector<int>(2, 6));
+}
+int main() {
+    vector<bool> flags = vector<bool>(2, true);
+    vector<char> letters = vector<char>(2, 'x');
+    vector<string> words = vector<string>(2, "word");
+    vector<vector<int>> rows =
+        vector<vector<int>>(2, vector<int>(1, 7));
+    for flag in flags { print(flag); }
+    for letter in letters { print(letter); }
+    for word in words { print(word); }
+    for value in rows {
+        for value in value { print(value); }
+    }
+    for character in "az" { print(character); }
+    for number in vector<int>(2, 4) { print(number); }
+    for number in make_rows()[0] { print(number); }
+    return 0;
+}
+)"};
+    auto& main = require_main(checked.program());
+    TPP_CHECK(main.body != nullptr);
+    auto& flags = require_statement_node<tpp::ForEachStatement>(*main.body, 4);
+    auto& letters = require_statement_node<tpp::ForEachStatement>(*main.body, 5);
+    auto& words = require_statement_node<tpp::ForEachStatement>(*main.body, 6);
+    auto& outer = require_statement_node<tpp::ForEachStatement>(*main.body, 7);
+    TPP_CHECK(outer.body != nullptr);
+    auto& inner = require_statement_node<tpp::ForEachStatement>(*outer.body, 0);
+    auto& characters =
+        require_statement_node<tpp::ForEachStatement>(*main.body, 8);
+    auto& temporary =
+        require_statement_node<tpp::ForEachStatement>(*main.body, 9);
+    auto& indexed_temporary =
+        require_statement_node<tpp::ForEachStatement>(*main.body, 10);
+    const std::array loops{
+        &flags,
+        &letters,
+        &words,
+        &outer,
+        &inner,
+        &characters,
+        &temporary,
+        &indexed_temporary,
+    };
+
+    tpp::DiagnosticEngine diagnostics;
+    const auto generated = generate(checked, diagnostics);
+    TPP_CHECK(generated.has_value());
+    TPP_CHECK(!diagnostics.has_errors());
+    const auto& output = *generated;
+
+    constexpr std::array<std::string_view, 8> binding_types{
+        "bool",
+        "char",
+        "std::string",
+        "std::vector<std::int64_t>",
+        "std::int64_t",
+        "char",
+        "std::int64_t",
+        "std::int64_t",
+    };
+    constexpr std::array<std::string_view, 8> iterable_types{
+        "std::vector<bool>",
+        "std::vector<char>",
+        "std::vector<std::string>",
+        "std::vector<std::vector<std::int64_t>>",
+        "std::vector<std::int64_t>",
+        "std::string",
+        "std::vector<std::int64_t>",
+        "std::vector<std::int64_t>",
+    };
+
+    for (std::size_t index = 0; index < loops.size(); ++index) {
+        const auto binding = checked.declarations().symbol_for(*loops[index]);
+        TPP_CHECK(binding.has_value());
+        TPP_CHECK(checked.type_info().inferred_type(*binding).has_value());
+        const auto suffix = std::to_string(binding->value);
+        tpp::test::check_contains(
+            output,
+            "const " + std::string{iterable_types[index]}
+                + " tpp_iterable_" + suffix + " = ");
+        tpp::test::check_contains(
+            output,
+            "for ([[maybe_unused]] " + std::string{binding_types[index]}
+                + " tpp_variable_" + suffix + " : tpp_iterable_" + suffix
+                + ")");
+    }
+
+    TPP_CHECK(output.find("auto& tpp_variable_") == std::string::npos);
+    TPP_CHECK(output.find("bool& tpp_variable_") == std::string::npos);
+}
+
+void foreach_bindings_are_mutable_copies()
+{
+    const auto output = generate_source(R"(int main() {
+    vector<string> words = vector<string>(2, "word");
+    for word in words {
+        word.push('!');
+        print(word);
+    }
+    print(words[0]);
+
+    vector<vector<int>> rows =
+        vector<vector<int>>(2, vector<int>(1, 1));
+    for row in rows {
+        row[0] = 9;
+        print(row[0]);
+    }
+    print(rows[0][0]);
+    return 0;
+}
+)");
+
+    tpp::test::check_contains(
+        output,
+        "tpp::runtime::string_push(tpp_variable_");
+    tpp::test::check_contains(
+        output,
+        "tpp::runtime::vector_index(tpp_variable_");
+    TPP_CHECK(output.find("for (std::string&") == std::string::npos);
+    TPP_CHECK(output.find("for (std::vector<std::int64_t>&")
+        == std::string::npos);
+}
+
+void nested_loop_blocks_break_and_continue_are_lowered()
+{
+    const auto output = generate_source(R"(int main() {
+    for outer in 0..2 {
+        { print(outer); }
+        for inner in 10..13 {
+            print(inner);
+            break;
+        }
+        for repeated in 0..2 {
+            print(repeated);
+            continue;
+        }
+        continue;
+    }
+    return 0;
+}
+)");
+
+    TPP_CHECK_EQ(count_occurrences(output, "for (std::int64_t tpp_range_cursor_"),
+        std::size_t{3});
+    TPP_CHECK_EQ(count_occurrences(output, "break;"), std::size_t{1});
+    TPP_CHECK_EQ(count_occurrences(output, "continue;"), std::size_t{2});
+    tpp::test::check_contains(output, "            {\n                std::cout");
+}
+
+void supported_locals_and_user_calls_work_inside_loop_bodies()
+{
+    const auto output = generate_source(R"(void consume(
+    int number,
+    string text,
+    char letter,
+    vector<int> values
+) {
+    print(number);
+    print(text);
+    print(letter);
+    print(values[0]);
+}
+
+int main() {
+    for value in 0..1 {
+        int number = value;
+        string text = "range";
+        char letter = 'r';
+        vector<int> values = vector<int>(1, value);
+        consume(number, text, letter, values);
+    }
+
+    vector<int> source = vector<int>(1, 7);
+    for value in source {
+        int number = value;
+        string text = "each";
+        char letter = 'e';
+        vector<int> values = vector<int>(1, value);
+        consume(number, text, letter, values);
+    }
+    return 0;
+}
+)");
+
+    TPP_CHECK_EQ(count_occurrences(output, "tpp_function_0("), std::size_t{4});
+    TPP_CHECK_EQ(count_occurrences(output, "std::int64_t tpp_variable_"),
+        std::size_t{4});
+    TPP_CHECK_EQ(count_occurrences(output, "std::string tpp_variable_"),
+        std::size_t{2});
+    TPP_CHECK_EQ(count_occurrences(output, "char tpp_variable_"),
+        std::size_t{2});
+    TPP_CHECK_EQ(count_occurrences(output, "std::vector<std::int64_t> tpp_variable_"),
+        std::size_t{3});
+    tpp::test::check_contains(output, "            tpp_function_0(");
+}
+
+void malformed_and_unsupported_loops_have_no_partial_output()
+{
+    {
+        CheckedProgram checked{
+            "int main() { for value in 0..1 { print(value); } return 0; }"};
+        auto& main = require_main(checked.program());
+        TPP_CHECK(main.body != nullptr);
+        auto& loop = require_statement_node<tpp::ForRangeStatement>(
+            *main.body,
+            0);
+        loop.begin.reset();
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!generate(checked, diagnostics).has_value());
+        check_has_diagnostic(diagnostics, "malformed AST");
+    }
+
+    {
+        CheckedProgram checked{
+            "int main() { for value in 0..1 { print(value); } return 0; }"};
+        auto& main = require_main(checked.program());
+        TPP_CHECK(main.body != nullptr);
+        auto& loop = require_statement_node<tpp::ForRangeStatement>(
+            *main.body,
+            0);
+        loop.operator_kind = static_cast<tpp::RangeOperator>(99);
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!generate(checked, diagnostics).has_value());
+        check_has_diagnostic(diagnostics, "malformed AST");
+    }
+
+    {
+        CheckedProgram checked{
+            "int main() { for value in \"x\" { print(value); } return 0; }"};
+        auto& main = require_main(checked.program());
+        TPP_CHECK(main.body != nullptr);
+        auto& loop = require_statement_node<tpp::ForEachStatement>(
+            *main.body,
+            0);
+        loop.iterable.reset();
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!generate(checked, diagnostics).has_value());
+        check_has_diagnostic(diagnostics, "malformed AST");
+    }
+
+    {
+        const CheckedProgram checked{R"(int main() {
+    for value in 0..1 {
+        if true {}
+        while false {}
+    }
+    return 0;
+}
+)"};
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!generate(checked, diagnostics).has_value());
+        TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{2});
+        check_has_diagnostic(diagnostics, "if statements");
+        check_has_diagnostic(diagnostics, "while statements");
+    }
+
+    {
+        const CheckedProgram checked{
+            "int main() { for value in \"x\" { print(value); } return 0; }"};
+        const tpp::TypeInfo empty_types;
+        const auto context = tpp::CppGenerationContext{
+            .types = checked.types(),
+            .symbols = checked.symbols(),
+            .declarations = checked.declarations(),
+            .resolutions = checked.resolutions(),
+            .type_info = empty_types,
+        };
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!tpp::generate_cpp(
+            checked.program(),
+            context,
+            diagnostics).has_value());
+        TPP_CHECK(diagnostics.has_errors());
+        check_has_diagnostic(diagnostics, "type");
+    }
+}
+
 void missing_and_invalid_main_are_diagnosed()
 {
     {
@@ -1758,6 +2193,18 @@ int main()
          scalar_runtime_io_and_initialized_int_storage_are_supported},
         {"malformed read_int state has no partial output",
          malformed_read_int_state_has_no_partial_output},
+        {"range loops cache bounds and avoid inclusive overflow",
+         range_loops_cache_bounds_and_avoid_inclusive_overflow},
+        {"foreach snapshots and typed value bindings",
+         foreach_uses_owned_snapshots_and_typed_value_bindings},
+        {"foreach bindings are mutable copies",
+         foreach_bindings_are_mutable_copies},
+        {"nested loop blocks and transfers",
+         nested_loop_blocks_break_and_continue_are_lowered},
+        {"supported locals and calls inside loops",
+         supported_locals_and_user_calls_work_inside_loop_bodies},
+        {"malformed and unsupported loops",
+         malformed_and_unsupported_loops_have_no_partial_output},
         {"missing and invalid main", missing_and_invalid_main_are_diagnosed},
         {"calls to main", calls_to_main_are_rejected_without_partial_output},
         {"duplicate main", duplicate_main_is_rejected_before_emission},
