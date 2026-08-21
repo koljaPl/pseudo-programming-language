@@ -86,6 +86,18 @@ void check_exception(
     throw tpp::test::Failure{"expected runtime exception"};
 }
 
+template <typename Exception>
+void check_read_int_exception(
+    std::string input_text,
+    const std::string_view expected_message)
+{
+    std::istringstream input{std::move(input_text)};
+    const ScopedCinBuffer redirected{input.rdbuf()};
+    check_exception<Exception>(
+        [] { (void)tpp::runtime::read_int(); },
+        expected_message);
+}
+
 void length_counts_bytes_and_checks_conversion()
 {
     const std::string bytes{"A\0B", 3};
@@ -263,6 +275,102 @@ void vector_bool_proxy_and_nested_vectors_work()
     TPP_CHECK(bit_matrix[1][0]);
 }
 
+void integer_reads_accept_the_full_signed_64_bit_range()
+{
+    std::istringstream input{
+        " \t\n0 42 -17 +23 00042 -0 "
+        "9223372036854775807 -9223372036854775808"};
+    const ScopedCinBuffer redirected{input.rdbuf()};
+
+    TPP_CHECK_EQ(tpp::runtime::read_int(), std::int64_t{0});
+    TPP_CHECK_EQ(tpp::runtime::read_int(), std::int64_t{42});
+    TPP_CHECK_EQ(tpp::runtime::read_int(), std::int64_t{-17});
+    TPP_CHECK_EQ(tpp::runtime::read_int(), std::int64_t{23});
+    TPP_CHECK_EQ(tpp::runtime::read_int(), std::int64_t{42});
+    TPP_CHECK_EQ(tpp::runtime::read_int(), std::int64_t{0});
+    TPP_CHECK_EQ(
+        tpp::runtime::read_int(),
+        std::numeric_limits<std::int64_t>::max());
+    TPP_CHECK_EQ(
+        tpp::runtime::read_int(),
+        std::numeric_limits<std::int64_t>::min());
+}
+
+void integer_reads_reject_malformed_whole_tokens()
+{
+    for (const std::string_view token : {
+             "+",
+             "-",
+             "123abc",
+             "1.0",
+             "0x10",
+             "++1",
+             "--1",
+             "+-1",
+         }) {
+        check_read_int_exception<std::runtime_error>(
+            std::string{token},
+            "failed to read int");
+    }
+
+    std::istringstream input{"123abc 17"};
+    const ScopedCinBuffer redirected{input.rdbuf()};
+    check_exception<std::runtime_error>(
+        [] { (void)tpp::runtime::read_int(); },
+        "failed to read int");
+    TPP_CHECK_EQ(tpp::runtime::read_int(), std::int64_t{17});
+}
+
+void integer_reads_report_range_errors_without_overflow()
+{
+    for (const std::string_view token : {
+             "9223372036854775808",
+             "+9223372036854775808",
+             "-9223372036854775809",
+         }) {
+        check_read_int_exception<std::out_of_range>(
+            std::string{token},
+            "integer input out of range");
+    }
+
+    check_read_int_exception<std::out_of_range>(
+        std::string(1024, '9'),
+        "integer input out of range");
+
+    std::istringstream input{std::string(1024, '0') + " 8"};
+    const ScopedCinBuffer redirected{input.rdbuf()};
+    TPP_CHECK_EQ(tpp::runtime::read_int(), std::int64_t{0});
+    TPP_CHECK_EQ(tpp::runtime::read_int(), std::int64_t{8});
+}
+
+void integer_reads_report_input_failure()
+{
+    check_read_int_exception<std::runtime_error>(
+        "",
+        "failed to read int");
+    check_read_int_exception<std::runtime_error>(
+        " \t\n",
+        "failed to read int");
+
+    std::istringstream input{"42"};
+    const ScopedCinBuffer redirected{input.rdbuf()};
+    std::cin.setstate(std::ios::badbit);
+    check_exception<std::runtime_error>(
+        [] { (void)tpp::runtime::read_int(); },
+        "failed to read int");
+}
+
+void mixed_formatted_reads_share_the_stream_contract()
+{
+    std::istringstream input{" \t-12 word z +34"};
+    const ScopedCinBuffer redirected{input.rdbuf()};
+
+    TPP_CHECK_EQ(tpp::runtime::read_int(), std::int64_t{-12});
+    TPP_CHECK_EQ(tpp::runtime::read_string(), std::string{"word"});
+    TPP_CHECK_EQ(tpp::runtime::read_char(), 'z');
+    TPP_CHECK_EQ(tpp::runtime::read_int(), std::int64_t{34});
+}
+
 void formatted_reads_skip_whitespace()
 {
     std::istringstream input{"  hello  x"};
@@ -303,6 +411,11 @@ int main()
         {"vector construction", vector_construction_checks_size_and_initializes_values},
         {"checked vector indexing", vector_indexing_is_checked_and_mutable},
         {"vector bool and nesting", vector_bool_proxy_and_nested_vectors_work},
+        {"signed integer reads", integer_reads_accept_the_full_signed_64_bit_range},
+        {"malformed integer reads", integer_reads_reject_malformed_whole_tokens},
+        {"integer range errors", integer_reads_report_range_errors_without_overflow},
+        {"integer input failures", integer_reads_report_input_failure},
+        {"mixed formatted reads", mixed_formatted_reads_share_the_stream_contract},
         {"formatted reads", formatted_reads_skip_whitespace},
         {"read failures", failed_reads_throw},
     });
