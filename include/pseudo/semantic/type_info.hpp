@@ -1,6 +1,7 @@
 #pragma once
 
 #include "pseudo/ast/program.hpp"
+#include "pseudo/semantic/member_kind.hpp"
 #include "pseudo/semantic/symbol_table.hpp"
 #include "pseudo/semantic/type_context.hpp"
 
@@ -11,11 +12,6 @@
 namespace tpp {
 
 class TypeChecker;
-
-enum class MemberKind {
-    string_length,
-    string_push,
-};
 
 // AST-address mappings remain valid while the checked Program is alive,
 // unmoved, and structurally unchanged. Inferred symbol types are local to the
