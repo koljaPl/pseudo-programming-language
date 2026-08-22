@@ -424,7 +424,7 @@ bool Parser::looks_like_value_declaration() const noexcept {
         && tokens_[lookahead].kind != TokenKind::left_parenthesis;
 }
 
-BlockPtr Parser::parse_block() {
+BlockPtr Parser::parse_block(const bool stop_before_else) {
     if (!match(TokenKind::left_brace)) {
         report_at_current("expected block");
         return nullptr;
@@ -434,7 +434,13 @@ BlockPtr Parser::parse_block() {
     std::vector<BlockItem> items;
 
     while (!at_end() && !check(TokenKind::right_brace)
-           && !check(TokenKind::keyword_else)) {
+           && !(stop_before_else && check(TokenKind::keyword_else))) {
+        if (check(TokenKind::keyword_else)) {
+            report_at_current("unexpected 'else' without matching 'if'");
+            advance();
+            continue;
+        }
+
         const auto construct_begin = index_;
         auto item = parse_block_item();
 
@@ -446,7 +452,7 @@ BlockPtr Parser::parse_block() {
 
         if (index_ == construct_begin && !at_end()
             && !check(TokenKind::right_brace)
-            && !check(TokenKind::keyword_else)) {
+            && !(stop_before_else && check(TokenKind::keyword_else))) {
             advance();
         }
     }
@@ -533,7 +539,7 @@ std::optional<Statement> Parser::parse_if_statement() {
         return std::nullopt;
     }
 
-    auto then_block = parse_block();
+    auto then_block = parse_block(/*stop_before_else=*/true);
     if (!then_block) {
         return std::nullopt;
     }
@@ -543,6 +549,7 @@ std::optional<Statement> Parser::parse_if_statement() {
     if (match(TokenKind::keyword_else)) {
         if (!check(TokenKind::left_brace)) {
             report_at_current("expected block after 'else'");
+            return std::nullopt;
         } else {
             else_block = parse_block();
             if (else_block) {
@@ -857,6 +864,18 @@ SourceSpan Parser::finish_statement(std::string_view message) {
     }
 
     report(insertion_span(), std::string{message});
+
+    while (!at_end() && !check(TokenKind::right_brace)
+           && !check(TokenKind::keyword_else)
+           && !is_strong_statement_start(current().kind)
+           && !can_start_expression(current().kind)) {
+        if (match(TokenKind::semicolon)) {
+            return previous().span;
+        }
+
+        advance();
+    }
+
     return previous().span;
 }
 

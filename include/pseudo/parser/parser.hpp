@@ -44,7 +44,7 @@ private:
     [[nodiscard]] std::optional<ReturnType> parse_return_type();
     [[nodiscard]] bool looks_like_value_declaration() const noexcept;
 
-    [[nodiscard]] BlockPtr parse_block();
+    [[nodiscard]] BlockPtr parse_block(bool stop_before_else = false);
     [[nodiscard]] std::optional<BlockItem> parse_block_item();
     [[nodiscard]] std::optional<Statement> parse_statement();
     [[nodiscard]] std::optional<Statement> parse_if_statement();
