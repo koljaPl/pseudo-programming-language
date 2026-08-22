@@ -1,15 +1,10 @@
 #include "pseudo/codegen/cpp_generator.hpp"
 
-#include "pseudo/ast/program.hpp"
 #include "pseudo/diagnostics/diagnostic_engine.hpp"
+#include "pseudo/lowering/lowered_ir.hpp"
 #include "pseudo/semantic/builtin.hpp"
-#include "pseudo/semantic/declaration_info.hpp"
-#include "pseudo/semantic/resolution_info.hpp"
-#include "pseudo/semantic/symbol_table.hpp"
 #include "pseudo/semantic/type_context.hpp"
-#include "pseudo/semantic/type_info.hpp"
 
-#include <algorithm>
 #include <cstddef>
 #include <locale>
 #include <optional>
@@ -95,14 +90,14 @@ constexpr std::string_view minimum_integer_magnitude =
 }
 
 [[nodiscard]] std::optional<std::string_view> unary_operator_spelling(
-    const UnaryOperator operator_kind) noexcept
+    const LoweredUnaryOperator operator_kind) noexcept
 {
     switch (operator_kind) {
-    case UnaryOperator::plus:
+    case LoweredUnaryOperator::plus:
         return "+";
-    case UnaryOperator::minus:
+    case LoweredUnaryOperator::minus:
         return "-";
-    case UnaryOperator::logical_not:
+    case LoweredUnaryOperator::logical_not:
         return "!";
     }
 
@@ -110,34 +105,34 @@ constexpr std::string_view minimum_integer_magnitude =
 }
 
 [[nodiscard]] std::optional<std::string_view> binary_operator_spelling(
-    const BinaryOperator operator_kind) noexcept
+    const LoweredBinaryOperator operator_kind) noexcept
 {
     switch (operator_kind) {
-    case BinaryOperator::logical_or:
+    case LoweredBinaryOperator::logical_or:
         return "||";
-    case BinaryOperator::logical_and:
+    case LoweredBinaryOperator::logical_and:
         return "&&";
-    case BinaryOperator::equal:
+    case LoweredBinaryOperator::equal:
         return "==";
-    case BinaryOperator::not_equal:
+    case LoweredBinaryOperator::not_equal:
         return "!=";
-    case BinaryOperator::less:
+    case LoweredBinaryOperator::less:
         return "<";
-    case BinaryOperator::less_equal:
+    case LoweredBinaryOperator::less_equal:
         return "<=";
-    case BinaryOperator::greater:
+    case LoweredBinaryOperator::greater:
         return ">";
-    case BinaryOperator::greater_equal:
+    case LoweredBinaryOperator::greater_equal:
         return ">=";
-    case BinaryOperator::add:
+    case LoweredBinaryOperator::add:
         return "+";
-    case BinaryOperator::subtract:
+    case LoweredBinaryOperator::subtract:
         return "-";
-    case BinaryOperator::multiply:
+    case LoweredBinaryOperator::multiply:
         return "*";
-    case BinaryOperator::divide:
+    case LoweredBinaryOperator::divide:
         return "/";
-    case BinaryOperator::remainder:
+    case LoweredBinaryOperator::remainder:
         return "%";
     }
 
@@ -145,41 +140,45 @@ constexpr std::string_view minimum_integer_magnitude =
 }
 
 [[nodiscard]] std::optional<std::string_view> assignment_operator_spelling(
-    const AssignmentOperator operator_kind) noexcept
+    const LoweredAssignmentOperator operator_kind) noexcept
 {
     switch (operator_kind) {
-    case AssignmentOperator::assign:
+    case LoweredAssignmentOperator::assign:
         return "=";
-    case AssignmentOperator::add_assign:
+    case LoweredAssignmentOperator::add_assign:
         return "+=";
-    case AssignmentOperator::subtract_assign:
+    case LoweredAssignmentOperator::subtract_assign:
         return "-=";
-    case AssignmentOperator::multiply_assign:
+    case LoweredAssignmentOperator::multiply_assign:
         return "*=";
-    case AssignmentOperator::divide_assign:
+    case LoweredAssignmentOperator::divide_assign:
         return "/=";
-    case AssignmentOperator::remainder_assign:
+    case LoweredAssignmentOperator::remainder_assign:
         return "%=";
     }
 
     return std::nullopt;
 }
 
-[[nodiscard]] const IntegerLiteralExpression* unwrap_integer_literal(
-    const Expression& expression)
+[[nodiscard]] const LoweredIntegerLiteralExpression* unwrap_integer_literal(
+    const LoweredExpression& expression,
+    const TypeId expected_type)
 {
+    if (expression.type != expected_type) {
+        return nullptr;
+    }
     if (const auto* integer =
-            std::get_if<IntegerLiteralExpression>(&expression.node)) {
+            std::get_if<LoweredIntegerLiteralExpression>(&expression.node)) {
         return integer;
     }
 
-    const auto* parenthesized =
-        std::get_if<ParenthesizedExpression>(&expression.node);
-    if (parenthesized == nullptr || parenthesized->expression == nullptr) {
+    const auto* grouped =
+        std::get_if<LoweredGroupedExpression>(&expression.node);
+    if (grouped == nullptr || grouped->expression == nullptr) {
         return nullptr;
     }
 
-    return unwrap_integer_literal(*parenthesized->expression);
+    return unwrap_integer_literal(*grouped->expression, expected_type);
 }
 
 [[nodiscard]] std::string_view builtin_name(
@@ -203,29 +202,31 @@ constexpr std::string_view minimum_integer_magnitude =
     return "<unknown>";
 }
 
+template <typename Id>
 [[nodiscard]] std::string generated_name(
     const std::string_view prefix,
-    const SymbolId symbol)
+    const Id id)
 {
     std::ostringstream name;
     name.imbue(std::locale::classic());
-    name << prefix << symbol.value;
+    name << prefix << id.value;
     return name.str();
 }
 
 class CppGenerator {
 public:
     CppGenerator(
-        const CppGenerationContext& context,
+        const TypeContext& types,
         DiagnosticEngine& diagnostics)
-        : context_{context}
+        : types_{types}
         , diagnostics_{diagnostics}
         , initial_error_count_{diagnostics.error_count()}
     {
         output_.imbue(std::locale::classic());
     }
 
-    [[nodiscard]] std::optional<std::string> generate(const Program& program)
+    [[nodiscard]] std::optional<std::string> generate(
+        const LoweredProgram& program)
     {
         validate_program(program);
         if (has_new_errors()) {
@@ -233,7 +234,7 @@ public:
         }
 
         auto has_prototypes = false;
-        for (const auto& function : functions_) {
+        for (const auto& function : program.functions) {
             if (function.is_main) {
                 continue;
             }
@@ -245,11 +246,11 @@ public:
             output_ << '\n';
         }
 
-        for (std::size_t index = 0; index < functions_.size(); ++index) {
+        for (std::size_t index = 0; index < program.functions.size(); ++index) {
             if (index != 0) {
                 output_ << '\n';
             }
-            emit_function_definition(functions_[index]);
+            emit_function_definition(program.functions[index]);
         }
 
         if (has_new_errors()) {
@@ -273,12 +274,6 @@ public:
     }
 
 private:
-    struct FunctionEntry {
-        const FunctionDeclaration* declaration;
-        SymbolId symbol;
-        bool is_main;
-    };
-
     struct StorageReference {
         TypeId type;
         std::string generated_name;
@@ -301,81 +296,20 @@ private:
         }
     }
 
-    void emit_scoped_body(const Block& body)
-    {
-        auto enclosing_variables = current_variable_types_;
-        emit_body(body);
-        current_variable_types_ = std::move(enclosing_variables);
-    }
-
-    [[nodiscard]] const Symbol* symbol(
-        const SymbolId id,
+    [[nodiscard]] bool known_type(
+        const TypeId type,
         const SourceSpan span,
         const std::string_view role)
     {
-        if (id.value >= context_.symbols.symbol_count()) {
-            report(
-                span,
-                "malformed semantic state: " + std::string{role}
-                    + " has an invalid symbol");
-            return nullptr;
-        }
-        return &context_.symbols.symbol(id);
-    }
-
-    [[nodiscard]] std::optional<StorageReference> storage_reference(
-        const SymbolId id,
-        const SourceSpan span,
-        const std::string_view role)
-    {
-        const auto* entry = symbol(id, span, role);
-        if (entry == nullptr) {
-            return std::nullopt;
-        }
-
-        if (const auto* parameter = std::get_if<ParameterSymbol>(&entry->data)) {
-            if (!current_parameter_ids_.contains(id.value)) {
-                report(
-                    span,
-                    "malformed semantic state: parameter reference is outside "
-                    "its function");
-                return std::nullopt;
-            }
-            return StorageReference{
-                .type = parameter->type,
-                .generated_name = generated_name("tpp_parameter_", id),
-            };
-        }
-
-        if (const auto* variable = std::get_if<VariableSymbol>(&entry->data)) {
-            const auto active = current_variable_types_.find(id.value);
-            if (active == current_variable_types_.end()) {
-                report(
-                    span,
-                    "C++ code generation only supports references to local "
-                    "int, string, char, or vector variables in the current "
-                    "function yet");
-                return std::nullopt;
-            }
-            if (variable->type.has_value()
-                && *variable->type != active->second) {
-                report(
-                    span,
-                    "malformed semantic state: active local variable type "
-                    "does not match its symbol");
-                return std::nullopt;
-            }
-            return StorageReference{
-                .type = active->second,
-                .generated_name = generated_name("tpp_variable_", id),
-            };
+        if (types_.lookup(type).has_value()) {
+            return true;
         }
 
         report(
             span,
-            "malformed semantic state: " + std::string{role}
-                + " is not a variable or parameter");
-        return std::nullopt;
+            "malformed lowered state: " + std::string{role}
+                + " has an unknown type");
+        return false;
     }
 
     [[nodiscard]] std::optional<std::string> cpp_type(
@@ -383,11 +317,11 @@ private:
         const SourceSpan span,
         const std::string_view role)
     {
-        const auto descriptor = context_.types.lookup(type);
+        const auto descriptor = types_.lookup(type);
         if (!descriptor.has_value()) {
             report(
                 span,
-                "malformed semantic state: " + std::string{role}
+                "malformed lowered state: " + std::string{role}
                     + " has an unknown type");
             return std::nullopt;
         }
@@ -399,7 +333,7 @@ private:
                 if (element.has_value()) {
                     report(
                         span,
-                        "malformed semantic state: vector element has type "
+                        "malformed lowered state: vector element has type "
                         "'void'");
                 }
                 return std::nullopt;
@@ -421,103 +355,29 @@ private:
             return std::string{"void"};
         }
 
-        report(span, "malformed semantic state: unknown primitive type");
+        report(span, "malformed lowered state: unknown primitive type");
         return std::nullopt;
     }
 
     [[nodiscard]] bool is_vector_type(const TypeId type) const noexcept
     {
-        const auto descriptor = context_.types.lookup(type);
+        const auto descriptor = types_.lookup(type);
         return descriptor.has_value()
             && std::holds_alternative<SemanticVectorType>(*descriptor);
     }
 
     [[nodiscard]] bool is_supported_local_type(const TypeId type) const noexcept
     {
-        return type == context_.types.integer_type()
-            || type == context_.types.string_type()
-            || type == context_.types.character_type()
+        return type == types_.integer_type()
+            || type == types_.string_type()
+            || type == types_.character_type()
             || is_vector_type(type);
     }
 
-    [[nodiscard]] std::optional<TypeId> scalar_type(
-        const ScalarTypeKind kind) const noexcept
-    {
-        switch (kind) {
-        case ScalarTypeKind::integer:
-            return context_.types.integer_type();
-        case ScalarTypeKind::boolean:
-            return context_.types.boolean_type();
-        case ScalarTypeKind::character:
-            return context_.types.character_type();
-        case ScalarTypeKind::string:
-            return context_.types.string_type();
-        }
-        return std::nullopt;
-    }
-
-    [[nodiscard]] bool syntax_type_matches(
-        const ValueType& syntax,
-        const TypeId semantic) const noexcept
-    {
-        return std::visit(
-            [this, semantic](const auto& node) {
-                using Node = std::decay_t<decltype(node)>;
-                if constexpr (std::is_same_v<Node, ScalarTypeKind>) {
-                    const auto type = scalar_type(node);
-                    return type.has_value() && *type == semantic;
-                } else {
-                    const auto descriptor = context_.types.lookup(semantic);
-                    const auto* vector = descriptor.has_value()
-                        ? std::get_if<SemanticVectorType>(&*descriptor)
-                        : nullptr;
-                    return vector != nullptr && node.element_type != nullptr
-                        && syntax_type_matches(
-                            *node.element_type,
-                            vector->element_type);
-                }
-            },
-            syntax.node);
-    }
-
-    [[nodiscard]] bool syntax_return_type_matches(
-        const ReturnType& syntax,
-        const TypeId semantic) const noexcept
-    {
-        return std::visit(
-            [this, semantic](const auto& node) {
-                using Node = std::decay_t<decltype(node)>;
-                if constexpr (std::is_same_v<Node, VoidType>) {
-                    return semantic == context_.types.void_type();
-                } else {
-                    return syntax_type_matches(node, semantic);
-                }
-            },
-            syntax.node);
-    }
-
-    [[nodiscard]] std::optional<TypeId> semantic_primitive_type(
-        const PrimitiveTypeKind kind) const noexcept
-    {
-        switch (kind) {
-        case PrimitiveTypeKind::integer:
-            return context_.types.integer_type();
-        case PrimitiveTypeKind::boolean:
-            return context_.types.boolean_type();
-        case PrimitiveTypeKind::character:
-            return context_.types.character_type();
-        case PrimitiveTypeKind::string:
-            return context_.types.string_type();
-        case PrimitiveTypeKind::void_type:
-            return context_.types.void_type();
-        }
-        return std::nullopt;
-    }
-
-    [[nodiscard]] std::optional<PrimitiveTypeKind> semantic_primitive_kind(
+    [[nodiscard]] std::optional<PrimitiveTypeKind> primitive_kind(
         const TypeId type) const noexcept
     {
-        const auto descriptor = context_.types.lookup(type);
+        const auto descriptor = types_.lookup(type);
         if (!descriptor.has_value()) {
             return std::nullopt;
         }
@@ -528,306 +388,397 @@ private:
             : std::nullopt;
     }
 
-    [[nodiscard]] const FunctionSymbol* function_symbol(
-        const FunctionEntry& function)
+    [[nodiscard]] std::optional<TypeId> primitive_type(
+        const PrimitiveTypeKind kind) const noexcept
     {
-        const auto* entry = symbol(
-            function.symbol,
-            function.declaration->name_span,
-            "function declaration");
-        if (entry == nullptr) {
-            return nullptr;
+        switch (kind) {
+        case PrimitiveTypeKind::integer:
+            return types_.integer_type();
+        case PrimitiveTypeKind::boolean:
+            return types_.boolean_type();
+        case PrimitiveTypeKind::character:
+            return types_.character_type();
+        case PrimitiveTypeKind::string:
+            return types_.string_type();
+        case PrimitiveTypeKind::void_type:
+            return types_.void_type();
         }
-
-        const auto* data = std::get_if<FunctionSymbol>(&entry->data);
-        if (data == nullptr) {
-            report(
-                function.declaration->name_span,
-                "malformed semantic state: function declaration symbol is "
-                "not a function");
-        }
-        return data;
+        return std::nullopt;
     }
 
-    void validate_program(const Program& program)
+    void validate_program(const LoweredProgram& program)
     {
-        const FunctionDeclaration* main_declaration = nullptr;
+        const LoweredFunction* main_function = nullptr;
 
-        for (const auto& declaration : program.declarations) {
-            std::visit(
-                [&](const auto& node) {
-                    using Node = std::decay_t<decltype(node)>;
+        for (const auto& function : program.functions) {
+            const auto inserted =
+                functions_.emplace(function.symbol.value, &function);
+            if (!inserted.second) {
+                report(
+                    function.name_span,
+                    "malformed lowered state: duplicate function symbol");
+            }
+            if (!seen_symbol_ids_.insert(function.symbol.value).second) {
+                report(
+                    function.name_span,
+                    "malformed lowered state: reused semantic symbol");
+            }
 
-                    if constexpr (std::is_same_v<Node, VariableDeclaration>) {
-                        report(
-                            node.span,
-                            "C++ code generation does not support global "
-                            "variables yet");
-                    } else {
-                        const auto is_main = node.name == "main";
-                        if (is_main && main_declaration != nullptr) {
-                            report(
-                                node.name_span,
-                                "C++ code generation requires exactly one "
-                                "top-level 'main' function");
-                            return;
-                        }
-                        if (is_main) {
-                            main_declaration = &node;
-                        }
-                        validate_function(node, is_main);
-                    }
-                },
-                declaration);
+            if (function.is_main) {
+                if (main_function != nullptr) {
+                    report(
+                        function.name_span,
+                        "C++ code generation requires exactly one top-level "
+                        "'main' function");
+                } else {
+                    main_function = &function;
+                    main_symbol_ = function.symbol;
+                }
+            }
         }
 
-        if (main_declaration == nullptr) {
+        if (main_function == nullptr) {
             report(
                 program.span,
                 "C++ code generation requires a top-level 'int main()' "
                 "function");
         }
-    }
 
-    void validate_function(
-        const FunctionDeclaration& declaration,
-        const bool is_main)
-    {
-        const auto function_id = context_.declarations.symbol_for(declaration);
-        if (!function_id.has_value()) {
-            report(
-                declaration.name_span,
-                "malformed semantic state: function declaration has no "
-                "symbol");
-            return;
-        }
-
-        const auto* entry = symbol(
-            *function_id,
-            declaration.name_span,
-            "function declaration");
-        if (entry == nullptr) {
-            return;
-        }
-        const auto* function = std::get_if<FunctionSymbol>(&entry->data);
-        if (function == nullptr) {
-            report(
-                declaration.name_span,
-                "malformed semantic state: function declaration symbol is "
-                "not a function");
-            return;
-        }
-        if (!syntax_return_type_matches(
-                declaration.return_type,
-                function->return_type)) {
-            report(
-                declaration.return_type.span,
-                "malformed semantic state: function return type does not "
-                "match its declaration");
-        }
-
-        top_level_function_ids_.insert(function_id->value);
-        functions_.push_back(FunctionEntry{
-            .declaration = &declaration,
-            .symbol = *function_id,
-            .is_main = is_main,
-        });
-
-        if (is_main) {
-            main_symbol_ = *function_id;
-            if (function->return_type != context_.types.integer_type()
-                || !function->parameter_types.empty()
-                || !declaration.parameters.empty()) {
-                report(
-                    declaration.name_span,
-                    "C++ code generation requires 'main' to have return type "
-                    "'int' and no parameters");
+        for (const auto& function : program.functions) {
+            if (!known_type(
+                    function.return_type,
+                    function.name_span,
+                    "function return type")) {
+                continue;
             }
-        } else {
-            (void)cpp_type(
-                function->return_type,
-                declaration.return_type.span,
-                "function return type");
-        }
 
-        if (declaration.parameters.size()
-            != function->parameter_types.size()) {
-            report(
-                declaration.name_span,
-                "malformed semantic state: function parameter signature "
-                "does not match its declaration");
-        }
+            if (function.is_main) {
+                if (function.return_type != types_.integer_type()
+                    || !function.parameters.empty()) {
+                    report(
+                        function.name_span,
+                        "C++ code generation requires 'main' to have return "
+                        "type 'int' and no parameters");
+                }
+            } else {
+                (void)cpp_type(
+                    function.return_type,
+                    function.name_span,
+                    "function return type");
+            }
 
-        const auto parameter_count = std::min(
-            declaration.parameters.size(),
-            function->parameter_types.size());
-        for (std::size_t index = 0; index < parameter_count; ++index) {
-            validate_parameter(
-                declaration.parameters[index],
-                function->parameter_types[index]);
-        }
+            std::unordered_set<std::size_t> parameter_ids;
+            for (const auto& parameter : function.parameters) {
+                if (!parameter_ids.insert(parameter.symbol.value).second
+                    || !seen_symbol_ids_.insert(parameter.symbol.value).second) {
+                    report(
+                        parameter.name_span,
+                        "malformed lowered state: duplicate parameter symbol");
+                }
+                const auto parameter_type = cpp_type(
+                    parameter.type,
+                    parameter.name_span,
+                    "parameter");
+                if (parameter_type.has_value() && *parameter_type == "void") {
+                    report(
+                        parameter.name_span,
+                        "malformed lowered state: parameter has type 'void'");
+                }
+            }
 
-        if (declaration.body == nullptr) {
-            report(
-                declaration.span,
-                "malformed AST: function '" + declaration.name
-                    + "' has no body");
+            if (function.body == nullptr) {
+                report(
+                    function.span,
+                    "malformed lowered state: function has no body");
+            }
         }
     }
 
-    void validate_parameter(
-        const Parameter& parameter,
-        const TypeId signature_type)
+    void emit_function_signature(const LoweredFunction& function)
     {
-        const auto parameter_id = context_.declarations.symbol_for(parameter);
-        if (!parameter_id.has_value()) {
-            report(
-                parameter.name_span,
-                "malformed semantic state: parameter declaration has no "
-                "symbol");
-            return;
-        }
-
-        const auto* entry = symbol(
-            *parameter_id,
-            parameter.name_span,
-            "parameter declaration");
-        if (entry == nullptr) {
-            return;
-        }
-        const auto* data = std::get_if<ParameterSymbol>(&entry->data);
-        if (data == nullptr) {
-            report(
-                parameter.name_span,
-                "malformed semantic state: parameter declaration symbol is "
-                "not a parameter");
-            return;
-        }
-        if (data->type != signature_type) {
-            report(
-                parameter.name_span,
-                "malformed semantic state: parameter type does not match "
-                "function signature");
-            return;
-        }
-        if (!syntax_type_matches(parameter.type, signature_type)) {
-            report(
-                parameter.type.span,
-                "malformed semantic state: parameter semantic type does not "
-                "match its declaration");
-            return;
-        }
-
-        const auto spelling = cpp_type(
-            signature_type,
-            parameter.type.span,
-            "parameter");
-        if (spelling.has_value() && *spelling == "void") {
-            report(
-                parameter.type.span,
-                "malformed semantic state: parameter has type 'void'");
-        }
-    }
-
-    void emit_function_signature(const FunctionEntry& entry)
-    {
-        const auto* function = function_symbol(entry);
-        if (function == nullptr) {
-            return;
-        }
-
-        if (entry.is_main) {
+        if (function.is_main) {
             output_ << "int main()";
             return;
         }
 
         const auto return_type = cpp_type(
-            function->return_type,
-            entry.declaration->return_type.span,
+            function.return_type,
+            function.name_span,
             "function return type");
         if (!return_type.has_value()) {
             return;
         }
-        output_ << *return_type << ' '
-                << generated_name("tpp_function_", entry.symbol) << '(';
 
+        output_ << *return_type << ' '
+                << generated_name("tpp_function_", function.symbol) << '(';
         for (std::size_t index = 0;
-             index < entry.declaration->parameters.size();
+             index < function.parameters.size();
              ++index) {
             if (index != 0) {
                 output_ << ", ";
             }
-            const auto& parameter = entry.declaration->parameters[index];
-            const auto parameter_id =
-                context_.declarations.symbol_for(parameter);
-            if (!parameter_id.has_value()
-                || index >= function->parameter_types.size()) {
-                report(
-                    parameter.name_span,
-                    "malformed semantic state: parameter is missing from "
-                    "function signature");
-                continue;
-            }
+            const auto& parameter = function.parameters[index];
             const auto parameter_type = cpp_type(
-                function->parameter_types[index],
-                parameter.type.span,
+                parameter.type,
+                parameter.name_span,
                 "parameter");
             if (!parameter_type.has_value()) {
                 continue;
             }
             output_ << *parameter_type << ' '
-                    << generated_name("tpp_parameter_", *parameter_id);
+                    << generated_name("tpp_parameter_", parameter.symbol);
         }
         output_ << ')';
     }
 
-    void emit_function_definition(const FunctionEntry& entry)
+    void emit_function_definition(const LoweredFunction& function)
     {
-        emit_function_signature(entry);
+        emit_function_signature(function);
         output_ << "\n{\n";
 
-        current_function_ = &entry;
-        current_parameter_ids_.clear();
+        current_function_ = &function;
+        current_parameter_types_.clear();
         current_variable_types_.clear();
+        current_temporaries_.clear();
         indentation_level_ = 1;
         loop_depth_ = 0;
-        for (const auto& parameter : entry.declaration->parameters) {
-            if (const auto id = context_.declarations.symbol_for(parameter)) {
-                current_parameter_ids_.insert(id->value);
-            }
+
+        for (const auto& parameter : function.parameters) {
+            current_parameter_types_.emplace(
+                parameter.symbol.value,
+                parameter.type);
         }
 
-        if (entry.declaration->body != nullptr) {
-            emit_body(*entry.declaration->body);
+        if (function.body != nullptr) {
+            emit_body(*function.body);
         }
+
         output_ << "}\n";
-        current_parameter_ids_.clear();
+        current_parameter_types_.clear();
         current_variable_types_.clear();
+        current_temporaries_.clear();
         indentation_level_ = 0;
         loop_depth_ = 0;
         current_function_ = nullptr;
     }
 
-    void emit_body(const Block& body)
+    void emit_body(const LoweredBlock& body)
     {
-        for (const auto& item : body.items) {
-            std::visit(
-                [this](const auto& node) {
-                    using Node = std::decay_t<decltype(node)>;
-                    if constexpr (std::is_same_v<Node, FunctionDeclaration>) {
-                        report(
-                            node.span,
-                            "C++ code generation does not support nested "
-                            "functions yet");
-                    } else {
-                        emit_statement(node);
-                    }
-                },
-                item);
+        for (const auto& statement : body.statements) {
+            emit_statement(statement);
         }
     }
 
-    void emit_statement(const Statement& statement)
+    void emit_scoped_body(const LoweredBlock& body)
+    {
+        auto enclosing_variables = current_variable_types_;
+        auto enclosing_temporaries = current_temporaries_;
+        emit_body(body);
+        current_variable_types_ = std::move(enclosing_variables);
+        current_temporaries_ = std::move(enclosing_temporaries);
+    }
+
+    [[nodiscard]] std::optional<std::string> temporary_name(
+        const LoweredTemporary& temporary)
+    {
+        switch (temporary.role) {
+        case TempRole::range_begin:
+            return generated_name("tpp_range_begin_", temporary.owner);
+        case TempRole::range_end:
+            return generated_name("tpp_range_end_", temporary.owner);
+        case TempRole::range_cursor:
+            return generated_name("tpp_range_cursor_", temporary.owner);
+        case TempRole::range_active:
+            return generated_name("tpp_range_active_", temporary.owner);
+        case TempRole::iterable_snapshot:
+            return generated_name("tpp_iterable_", temporary.owner);
+        }
+
+        report(
+            temporary.span,
+            "malformed lowered state: temporary has an unknown role");
+        return std::nullopt;
+    }
+
+    [[nodiscard]] bool validate_temporary(
+        const LoweredTemporary& temporary,
+        const TempRole role,
+        const SymbolId owner,
+        const TypeId type)
+    {
+        auto valid = true;
+        if (temporary.id.value != next_expected_temp_id_) {
+            report(
+                temporary.span,
+                "malformed lowered state: temporary ID is not in "
+                "deterministic preorder");
+            valid = false;
+        } else {
+            ++next_expected_temp_id_;
+        }
+        if (!seen_temp_ids_.insert(temporary.id.value).second) {
+            report(
+                temporary.span,
+                "malformed lowered state: duplicate temporary ID");
+            valid = false;
+        }
+        if (temporary.role != role) {
+            report(
+                temporary.span,
+                "malformed lowered state: temporary role does not match its "
+                "loop position");
+            valid = false;
+        }
+        if (temporary.owner != owner) {
+            report(
+                temporary.span,
+                "malformed lowered state: temporary owner does not match its "
+                "loop binding");
+            valid = false;
+        }
+        if (temporary.type != type) {
+            report(
+                temporary.span,
+                "malformed lowered state: temporary type does not match its "
+                "loop role");
+            valid = false;
+        }
+        if (!known_type(temporary.type, temporary.span, "temporary")
+            || !temporary_name(temporary).has_value()) {
+            valid = false;
+        }
+        return valid;
+    }
+
+    [[nodiscard]] bool activate_temporary(
+        const LoweredTemporary& temporary)
+    {
+        const auto inserted =
+            current_temporaries_.emplace(temporary.id.value, &temporary);
+        if (inserted.second) {
+            return true;
+        }
+
+        report(
+            temporary.span,
+            "malformed lowered state: temporary is already active");
+        return false;
+    }
+
+    [[nodiscard]] std::optional<StorageReference> storage_reference(
+        const LoweredStorage& storage,
+        const SourceSpan span,
+        const std::string_view role)
+    {
+        if (const auto* symbol = std::get_if<SymbolId>(&storage)) {
+            const auto parameter =
+                current_parameter_types_.find(symbol->value);
+            const auto variable =
+                current_variable_types_.find(symbol->value);
+            if (parameter != current_parameter_types_.end()
+                && variable != current_variable_types_.end()) {
+                report(
+                    span,
+                    "malformed lowered state: storage symbol is active as "
+                    "both a parameter and variable");
+                return std::nullopt;
+            }
+            if (parameter != current_parameter_types_.end()) {
+                return StorageReference{
+                    .type = parameter->second,
+                    .generated_name =
+                        generated_name("tpp_parameter_", *symbol),
+                };
+            }
+            if (variable != current_variable_types_.end()) {
+                return StorageReference{
+                    .type = variable->second,
+                    .generated_name =
+                        generated_name("tpp_variable_", *symbol),
+                };
+            }
+
+            report(
+                span,
+                "malformed lowered state: " + std::string{role}
+                    + " references an inactive symbol");
+            return std::nullopt;
+        }
+
+        const auto temporary_id = std::get<TempId>(storage);
+        const auto temporary =
+            current_temporaries_.find(temporary_id.value);
+        if (temporary == current_temporaries_.end()) {
+            report(
+                span,
+                "malformed lowered state: " + std::string{role}
+                    + " references an inactive temporary");
+            return std::nullopt;
+        }
+        const auto name = temporary_name(*temporary->second);
+        if (!name.has_value()) {
+            return std::nullopt;
+        }
+        return StorageReference{
+            .type = temporary->second->type,
+            .generated_name = *name,
+        };
+    }
+
+    [[nodiscard]] bool introduce_variable(
+        const SymbolId symbol,
+        const TypeId type,
+        const SourceSpan span,
+        const std::string_view role)
+    {
+        if (current_parameter_types_.contains(symbol.value)
+            || current_variable_types_.contains(symbol.value)) {
+            report(
+                span,
+                "malformed lowered state: " + std::string{role}
+                    + " is already active");
+            return false;
+        }
+        if (!seen_symbol_ids_.insert(symbol.value).second) {
+            report(
+                span,
+                "malformed lowered state: " + std::string{role}
+                    + " reuses a semantic symbol");
+            return false;
+        }
+        current_variable_types_.emplace(symbol.value, type);
+        return true;
+    }
+
+    [[nodiscard]] const LoweredExpression* unwrap_grouped_expression(
+        const LoweredExpression& expression)
+    {
+        const auto* current = &expression;
+        for (;;) {
+            const auto* grouped =
+                std::get_if<LoweredGroupedExpression>(&current->node);
+            if (grouped == nullptr) {
+                return current;
+            }
+            if (grouped->expression == nullptr) {
+                report(
+                    current->span,
+                    "malformed lowered state: grouped expression has no "
+                    "expression");
+                return nullptr;
+            }
+            if (grouped->expression->type != current->type) {
+                report(
+                    current->span,
+                    "malformed lowered state: grouped expression type does "
+                    "not match its operand");
+                return nullptr;
+            }
+            current = grouped->expression.get();
+        }
+    }
+
+    void emit_statement(const LoweredStatement& statement)
     {
         std::visit(
             [this, &statement](const auto& node) {
@@ -838,169 +789,152 @@ private:
 
     void emit_statement_node(
         const SourceSpan span,
-        const VariableDeclaration& declaration)
+        const LoweredVariableStatement& statement)
     {
-        const auto declaration_id =
-            context_.declarations.symbol_for(declaration);
-        if (!declaration_id.has_value()) {
-            report(
-                declaration.name_span,
-                "malformed semantic state: local variable declaration has no "
-                "symbol");
-            return;
-        }
-
-        const auto* entry = symbol(
-            *declaration_id,
-            declaration.name_span,
-            "local variable declaration");
-        if (entry == nullptr) {
-            return;
-        }
-        const auto* variable = std::get_if<VariableSymbol>(&entry->data);
-        if (variable == nullptr) {
-            report(
-                declaration.name_span,
-                "malformed semantic state: local variable declaration symbol "
-                "is not a variable");
-            return;
-        }
-        if (!variable->type.has_value()) {
-            report(
-                declaration.name_span,
-                "malformed semantic state: local variable has no declared "
-                "type");
-            return;
-        }
-        if (!syntax_type_matches(declaration.type, *variable->type)) {
-            report(
-                declaration.type.span,
-                "malformed semantic state: local variable semantic type does "
-                "not match its declaration");
-            return;
-        }
-        if (!is_supported_local_type(*variable->type)) {
-            report(
-                declaration.type.span,
-                "C++ code generation only supports local variables of type "
-                "'int', 'string', 'char', or 'vector<T>' yet");
-            return;
-        }
-        if (declaration.initializer == nullptr) {
+        if (statement.initializer == nullptr) {
             report(
                 span,
                 "C++ code generation only supports initialized local int, "
                 "string, char, or vector variables yet");
             return;
         }
-
-        const auto initializer_type =
-            context_.type_info.type_of(*declaration.initializer);
-        if (!initializer_type.has_value()) {
-            report(
-                declaration.initializer->span,
-                "malformed semantic state: local variable initializer has no "
-                "type");
+        if (!known_type(statement.type, statement.name_span, "local variable")
+            || !known_type(
+                statement.initializer->type,
+                statement.initializer->span,
+                "local variable initializer")) {
             return;
         }
-        if (*initializer_type != *variable->type) {
+        if (statement.initializer->type != statement.type) {
             report(
-                declaration.initializer->span,
-                "malformed semantic state: local variable initializer type "
+                statement.initializer->span,
+                "malformed lowered state: local variable initializer type "
                 "does not match its declaration");
+            return;
+        }
+        if (!is_supported_local_type(statement.type)) {
+            report(
+                statement.name_span,
+                "C++ code generation only supports local variables of type "
+                "'int', 'string', 'char', or 'vector<T>' yet");
+            return;
+        }
+        if (current_parameter_types_.contains(statement.symbol.value)
+            || current_variable_types_.contains(statement.symbol.value)
+            || seen_symbol_ids_.contains(statement.symbol.value)) {
+            report(
+                statement.name_span,
+                "malformed lowered state: local variable symbol is already "
+                "active or reused");
             return;
         }
 
         const auto variable_type = cpp_type(
-            *variable->type,
-            declaration.type.span,
+            statement.type,
+            statement.name_span,
             "local variable");
         if (!variable_type.has_value()) {
             return;
         }
 
-        if (current_variable_types_.contains(declaration_id->value)) {
-            report(
-                declaration.name_span,
-                "malformed semantic state: local variable declaration "
-                "symbol is already active");
-            return;
-        }
-
         emit_indentation();
         output_ << *variable_type << ' '
-                << generated_name("tpp_variable_", *declaration_id) << " = ";
-        if (!emit_expression(*declaration.initializer)) {
+                << generated_name("tpp_variable_", statement.symbol) << " = ";
+        if (!emit_expression(*statement.initializer)) {
             output_ << ";\n";
             return;
         }
         output_ << ";\n";
-        current_variable_types_.emplace(
-            declaration_id->value,
-            *variable->type);
+        (void)introduce_variable(
+            statement.symbol,
+            statement.type,
+            statement.name_span,
+            "local variable");
     }
 
-    [[nodiscard]] std::optional<std::vector<TypeId>>
-    validate_assignment_indices(
-        const AssignmentTarget& target,
-        const TypeId storage_type,
-        const TypeId recorded_target_type)
+    [[nodiscard]] bool validate_assignment_target(
+        const LoweredAssignmentTarget& target,
+        const StorageReference& storage)
     {
-        auto current_type = storage_type;
-        std::vector<TypeId> container_types;
-        container_types.reserve(target.indices.size());
+        if (storage.type != target.storage_type) {
+            report(
+                target.storage_span,
+                "malformed lowered state: assignment storage type does not "
+                "match its active storage");
+            return false;
+        }
+        if (!known_type(
+                target.storage_type,
+                target.storage_span,
+                "assignment storage")
+            || !known_type(target.type, target.span, "assignment target")) {
+            return false;
+        }
+        if (target.indices.size() != target.container_types.size()) {
+            report(
+                target.span,
+                "malformed lowered state: assignment target container chain "
+                "does not match its indices");
+            return false;
+        }
 
-        for (const auto& index : target.indices) {
-            if (index == nullptr) {
+        auto current_type = target.storage_type;
+        for (std::size_t index = 0; index < target.indices.size(); ++index) {
+            if (target.container_types[index] != current_type) {
                 report(
                     target.span,
-                    "malformed AST: assignment target index is missing");
-                return std::nullopt;
+                    "malformed lowered state: assignment target has an "
+                    "invalid indexed container chain");
+                return false;
             }
-            const auto index_type = context_.type_info.type_of(*index);
-            if (!index_type.has_value()
-                || *index_type != context_.types.integer_type()) {
+            const auto& index_expression = target.indices[index];
+            if (index_expression == nullptr) {
                 report(
-                    index->span,
-                    "malformed semantic state: assignment target index does "
+                    target.span,
+                    "malformed lowered state: assignment target index is "
+                    "missing");
+                return false;
+            }
+            if (index_expression->type != types_.integer_type()) {
+                report(
+                    index_expression->span,
+                    "malformed lowered state: assignment target index does "
                     "not have type 'int'");
-                return std::nullopt;
+                return false;
             }
 
-            container_types.push_back(current_type);
-            if (current_type == context_.types.string_type()) {
-                current_type = context_.types.character_type();
+            if (current_type == types_.string_type()) {
+                current_type = types_.character_type();
                 continue;
             }
 
-            const auto descriptor = context_.types.lookup(current_type);
+            const auto descriptor = types_.lookup(current_type);
             const auto* vector = descriptor.has_value()
                 ? std::get_if<SemanticVectorType>(&*descriptor)
                 : nullptr;
             if (vector == nullptr) {
                 report(
                     target.span,
-                    "malformed semantic state: assignment target indexes a "
+                    "malformed lowered state: assignment target indexes a "
                     "non-indexable type");
-                return std::nullopt;
+                return false;
             }
             current_type = vector->element_type;
         }
 
-        if (current_type != recorded_target_type) {
+        if (current_type != target.type) {
             report(
                 target.span,
-                "malformed semantic state: assignment target type does not "
-                "match its indexed symbol type");
-            return std::nullopt;
+                "malformed lowered state: assignment target type does not "
+                "match its indexed storage type");
+            return false;
         }
-        return container_types;
+        return true;
     }
 
     [[nodiscard]] bool emit_assignment_target(
-        const AssignmentTarget& target,
+        const LoweredAssignmentTarget& target,
         const StorageReference& storage,
-        const std::vector<TypeId>& container_types,
         const std::size_t depth)
     {
         if (depth == 0) {
@@ -1008,16 +942,16 @@ private:
             return true;
         }
 
-        const auto container_type = container_types[depth - 1];
-        if (container_type == context_.types.string_type()) {
+        const auto container_type = target.container_types[depth - 1];
+        if (container_type == types_.string_type()) {
             output_ << "tpp::runtime::string_index(";
         } else {
-            const auto descriptor = context_.types.lookup(container_type);
+            const auto descriptor = types_.lookup(container_type);
             if (!descriptor.has_value()
                 || !std::holds_alternative<SemanticVectorType>(*descriptor)) {
                 report(
                     target.span,
-                    "malformed semantic state: assignment target has an "
+                    "malformed lowered state: assignment target has an "
                     "invalid indexed container type");
                 return false;
             }
@@ -1026,7 +960,7 @@ private:
         }
         uses_runtime_ = true;
 
-        if (!emit_assignment_target(target, storage, container_types, depth - 1)) {
+        if (!emit_assignment_target(target, storage, depth - 1)) {
             output_ << ')';
             return false;
         }
@@ -1042,87 +976,54 @@ private:
 
     void emit_statement_node(
         const SourceSpan span,
-        const AssignmentStatement& statement)
+        const LoweredAssignmentStatement& statement)
     {
         if (statement.value == nullptr) {
-            report(span, "malformed AST: assignment has no value");
-            return;
-        }
-
-        const auto resolution =
-            context_.resolutions.resolution_for(statement.target);
-        if (!resolution.has_value()) {
-            report(
-                statement.target.name_span,
-                "malformed semantic state: assignment target has no "
-                "resolution");
-            return;
-        }
-        const auto* target_id = std::get_if<SymbolId>(&*resolution);
-        if (target_id == nullptr) {
-            report(
-                statement.target.name_span,
-                "malformed semantic state: assignment target resolves to a "
-                "builtin");
+            report(span, "malformed lowered state: assignment has no value");
             return;
         }
         const auto storage = storage_reference(
-            *target_id,
-            statement.target.name_span,
+            statement.target.storage,
+            statement.target.storage_span,
             "assignment target");
-        if (!storage.has_value()) {
+        if (!storage.has_value()
+            || !validate_assignment_target(statement.target, *storage)) {
             return;
         }
-
-        const auto target_type = context_.type_info.type_of(statement.target);
-        if (!target_type.has_value()) {
-            report(
-                statement.target.span,
-                "malformed semantic state: assignment target has no type");
+        if (!known_type(
+                statement.value->type,
+                statement.value->span,
+                "assignment value")) {
             return;
         }
-        const auto value_type = context_.type_info.type_of(*statement.value);
-        if (!value_type.has_value()) {
+        if (statement.value->type != statement.target.type) {
             report(
                 statement.value->span,
-                "malformed semantic state: assignment value has no type");
-            return;
-        }
-        if (*value_type != *target_type) {
-            report(
-                statement.value->span,
-                "malformed semantic state: assignment value type does not "
+                "malformed lowered state: assignment value type does not "
                 "match its target");
-            return;
-        }
-
-        const auto container_types = validate_assignment_indices(
-            statement.target,
-            storage->type,
-            *target_type);
-        if (!container_types.has_value()) {
             return;
         }
 
         const auto spelling =
             assignment_operator_spelling(statement.operator_kind);
         if (!spelling.has_value()) {
-            report(span, "malformed AST: unknown assignment operator");
+            report(span, "malformed lowered state: unknown assignment operator");
             return;
         }
+
         const auto direct_assignment =
-            statement.operator_kind == AssignmentOperator::assign;
+            statement.operator_kind == LoweredAssignmentOperator::assign;
         const auto integer_compound =
-            *target_type == context_.types.integer_type();
+            statement.target.type == types_.integer_type();
         const auto string_addition =
-            statement.operator_kind == AssignmentOperator::add_assign
-            && *target_type == context_.types.string_type();
+            statement.operator_kind == LoweredAssignmentOperator::add_assign
+            && statement.target.type == types_.string_type();
         const auto indexed_target = !statement.target.indices.empty();
         const auto supported_direct_assignment = !indexed_target
             && ((direct_assignment
-                    && (*target_type == context_.types.string_type()
-                        || *target_type == context_.types.character_type()
-                        || is_vector_type(*target_type)))
+                    && (statement.target.type == types_.string_type()
+                        || statement.target.type == types_.character_type()
+                        || is_vector_type(statement.target.type)))
                 || string_addition);
         const auto supported_indexed_assignment = indexed_target
             && (direct_assignment || integer_compound || string_addition);
@@ -1131,19 +1032,17 @@ private:
             report(
                 span,
                 indexed_target
-                    ? "malformed semantic state: assignment operator is "
+                    ? "malformed lowered state: assignment operator is "
                       "incompatible with its indexed target type"
                     : "C++ code generation only supports '=' for string, "
                       "char, and vector assignments and '+=' for string "
                       "assignments yet");
             return;
         }
-        if (!context_.types.lookup(*target_type).has_value()
-            || *target_type == context_.types.void_type()) {
+        if (statement.target.type == types_.void_type()) {
             report(
                 statement.target.span,
-                "malformed semantic state: assignment target has an invalid "
-                "type");
+                "malformed lowered state: assignment target has type 'void'");
             return;
         }
 
@@ -1151,7 +1050,6 @@ private:
         if (!emit_assignment_target(
                 statement.target,
                 *storage,
-                *container_types,
                 statement.target.indices.size())) {
             output_ << ";\n";
             return;
@@ -1166,39 +1064,41 @@ private:
 
     void emit_statement_node(
         const SourceSpan span,
-        const ExpressionStatement& statement)
+        const LoweredExpressionStatement& statement)
     {
         if (statement.expression == nullptr) {
             report(
                 span,
-                "malformed AST: expression statement has no expression");
+                "malformed lowered state: expression statement has no "
+                "expression");
             return;
         }
 
-        const auto* call = unwrap_call(*statement.expression);
-        if (call == nullptr) {
+        const auto* ungrouped =
+            unwrap_grouped_expression(*statement.expression);
+        if (ungrouped == nullptr) {
+            return;
+        }
+        const auto* builtin =
+            std::get_if<LoweredBuiltinCallExpression>(&ungrouped->node);
+        if (builtin != nullptr
+            && builtin->builtin == BuiltinFunctionKind::print) {
+            emit_print_statement(*statement.expression, *builtin);
+            return;
+        }
+
+        const auto is_call =
+            std::holds_alternative<LoweredUserCallExpression>(ungrouped->node)
+            || std::holds_alternative<LoweredBuiltinCallExpression>(
+                ungrouped->node)
+            || std::holds_alternative<LoweredMemberCallExpression>(
+                ungrouped->node);
+        if (!is_call) {
             report(
                 statement.expression->span,
                 "C++ code generation only supports function calls as "
                 "expression statements");
             return;
-        }
-
-        const auto* member = call->callee != nullptr
-            ? unwrap_member_access(*call->callee)
-            : nullptr;
-        if (member == nullptr) {
-            const auto target =
-                resolve_call_target(*call, statement.expression->span);
-            if (!target.has_value()) {
-                return;
-            }
-            if (const auto* builtin =
-                    std::get_if<BuiltinFunctionKind>(&*target);
-                builtin != nullptr && *builtin == BuiltinFunctionKind::print) {
-                emit_print_statement(*statement.expression, *call);
-                return;
-            }
         }
 
         emit_indentation();
@@ -1209,359 +1109,25 @@ private:
         output_ << ";\n";
     }
 
-    void emit_statement_node(const SourceSpan span, const IfStatement&)
-    {
-        report(span, "C++ code generation does not support if statements yet");
-    }
-
-    void emit_statement_node(const SourceSpan span, const WhileStatement&)
-    {
-        report(
-            span,
-            "C++ code generation does not support while statements yet");
-    }
-
     void emit_statement_node(
         const SourceSpan span,
-        const ForRangeStatement& statement)
-    {
-        if (statement.begin == nullptr || statement.end == nullptr) {
-            report(
-                span,
-                "malformed AST: for-range statement is missing a bound");
-            return;
-        }
-        if (statement.body == nullptr) {
-            report(
-                span,
-                "malformed AST: for-range statement is missing a body");
-            return;
-        }
-
-        const auto binding_id =
-            context_.declarations.symbol_for(statement);
-        if (!binding_id.has_value()) {
-            report(
-                statement.variable_span,
-                "malformed semantic state: for-range binding has no symbol");
-            return;
-        }
-        const auto* entry = symbol(
-            *binding_id,
-            statement.variable_span,
-            "for-range binding");
-        if (entry == nullptr) {
-            return;
-        }
-        const auto* variable = std::get_if<VariableSymbol>(&entry->data);
-        if (variable == nullptr) {
-            report(
-                statement.variable_span,
-                "malformed semantic state: for-range binding symbol is not "
-                "a variable");
-            return;
-        }
-        if (!variable->type.has_value()
-            || *variable->type != context_.types.integer_type()) {
-            report(
-                statement.variable_span,
-                "malformed semantic state: for-range binding does not have "
-                "type 'int'");
-            return;
-        }
-        if (current_variable_types_.contains(binding_id->value)) {
-            report(
-                statement.variable_span,
-                "malformed semantic state: for-range binding is already "
-                "active");
-            return;
-        }
-
-        const auto begin_type = context_.type_info.type_of(*statement.begin);
-        const auto end_type = context_.type_info.type_of(*statement.end);
-        if (!begin_type.has_value()
-            || *begin_type != context_.types.integer_type()) {
-            report(
-                statement.begin->span,
-                "malformed semantic state: for-range begin bound does not "
-                "have type 'int'");
-            return;
-        }
-        if (!end_type.has_value()
-            || *end_type != context_.types.integer_type()) {
-            report(
-                statement.end->span,
-                "malformed semantic state: for-range end bound does not have "
-                "type 'int'");
-            return;
-        }
-
-        switch (statement.operator_kind) {
-        case RangeOperator::exclusive:
-        case RangeOperator::inclusive:
-            break;
-        default:
-            report(span, "malformed AST: unknown range operator");
-            return;
-        }
-
-        const auto binding_name =
-            generated_name("tpp_variable_", *binding_id);
-        const auto begin_name =
-            generated_name("tpp_range_begin_", *binding_id);
-        const auto end_name =
-            generated_name("tpp_range_end_", *binding_id);
-        const auto cursor_name =
-            generated_name("tpp_range_cursor_", *binding_id);
-        const auto active_name =
-            generated_name("tpp_range_active_", *binding_id);
-
-        emit_indentation();
-        output_ << "{\n";
-        ++indentation_level_;
-
-        emit_indentation();
-        output_ << "const std::int64_t " << begin_name << " = ";
-        (void)emit_expression(*statement.begin);
-        output_ << ";\n";
-
-        emit_indentation();
-        output_ << "const std::int64_t " << end_name << " = ";
-        (void)emit_expression(*statement.end);
-        output_ << ";\n";
-
-        if (statement.operator_kind == RangeOperator::inclusive) {
-            emit_indentation();
-            output_ << "bool " << active_name << " = " << begin_name
-                    << " <= " << end_name << ";\n";
-        }
-
-        emit_indentation();
-        output_ << "for (std::int64_t " << cursor_name << " = "
-                << begin_name << "; ";
-        if (statement.operator_kind == RangeOperator::exclusive) {
-            output_ << cursor_name << " < " << end_name << "; ++"
-                    << cursor_name;
-        } else {
-            output_ << active_name << "; " << active_name << " = "
-                    << cursor_name << " != " << end_name << ", "
-                    << cursor_name << " += " << active_name
-                    << " ? std::int64_t{1} : std::int64_t{0}";
-        }
-        output_ << ")\n";
-        emit_indentation();
-        output_ << "{\n";
-        ++indentation_level_;
-
-        emit_indentation();
-        output_ << "[[maybe_unused]] std::int64_t " << binding_name << " = "
-                << cursor_name << ";\n";
-
-        current_variable_types_.emplace(
-            binding_id->value,
-            context_.types.integer_type());
-        ++loop_depth_;
-        emit_scoped_body(*statement.body);
-        --loop_depth_;
-        current_variable_types_.erase(binding_id->value);
-
-        --indentation_level_;
-        emit_indentation();
-        output_ << "}\n";
-        --indentation_level_;
-        emit_indentation();
-        output_ << "}\n";
-    }
-
-    void emit_statement_node(
-        const SourceSpan span,
-        const ForEachStatement& statement)
-    {
-        if (statement.iterable == nullptr) {
-            report(
-                span,
-                "malformed AST: for-each statement is missing an iterable");
-            return;
-        }
-        if (statement.body == nullptr) {
-            report(
-                span,
-                "malformed AST: for-each statement is missing a body");
-            return;
-        }
-
-        const auto binding_id =
-            context_.declarations.symbol_for(statement);
-        if (!binding_id.has_value()) {
-            report(
-                statement.variable_span,
-                "malformed semantic state: for-each binding has no symbol");
-            return;
-        }
-        const auto* entry = symbol(
-            *binding_id,
-            statement.variable_span,
-            "for-each binding");
-        if (entry == nullptr) {
-            return;
-        }
-        const auto* variable = std::get_if<VariableSymbol>(&entry->data);
-        if (variable == nullptr) {
-            report(
-                statement.variable_span,
-                "malformed semantic state: for-each binding symbol is not a "
-                "variable");
-            return;
-        }
-        if (variable->type.has_value()) {
-            report(
-                statement.variable_span,
-                "malformed semantic state: for-each binding unexpectedly "
-                "has a declared type");
-            return;
-        }
-        if (current_variable_types_.contains(binding_id->value)) {
-            report(
-                statement.variable_span,
-                "malformed semantic state: for-each binding is already "
-                "active");
-            return;
-        }
-
-        const auto iterable_type =
-            context_.type_info.type_of(*statement.iterable);
-        if (!iterable_type.has_value()) {
-            report(
-                statement.iterable->span,
-                "malformed semantic state: for-each iterable has no type");
-            return;
-        }
-        const auto inferred_type =
-            context_.type_info.inferred_type(*binding_id);
-        if (!inferred_type.has_value()) {
-            report(
-                statement.variable_span,
-                "malformed semantic state: for-each binding has no inferred "
-                "type");
-            return;
-        }
-
-        auto expected_binding_type = std::optional<TypeId>{};
-        if (*iterable_type == context_.types.string_type()) {
-            expected_binding_type = context_.types.character_type();
-        } else {
-            const auto descriptor = context_.types.lookup(*iterable_type);
-            const auto* vector = descriptor.has_value()
-                ? std::get_if<SemanticVectorType>(&*descriptor)
-                : nullptr;
-            if (vector == nullptr) {
-                report(
-                    statement.iterable->span,
-                    "malformed semantic state: for-each iterable is not a "
-                    "string or vector");
-                return;
-            }
-            expected_binding_type = vector->element_type;
-        }
-        if (*inferred_type != *expected_binding_type) {
-            report(
-                statement.variable_span,
-                "malformed semantic state: for-each inferred binding type "
-                "does not match its iterable");
-            return;
-        }
-
-        const auto iterable_cpp_type = cpp_type(
-            *iterable_type,
-            statement.iterable->span,
-            "for-each iterable");
-        const auto binding_cpp_type = cpp_type(
-            *inferred_type,
-            statement.variable_span,
-            "for-each binding");
-        if (!iterable_cpp_type.has_value()
-            || !binding_cpp_type.has_value()
-            || *iterable_cpp_type == "void"
-            || *binding_cpp_type == "void") {
-            if (iterable_cpp_type.has_value()
-                && *iterable_cpp_type == "void") {
-                report(
-                    statement.iterable->span,
-                    "malformed semantic state: for-each iterable has type "
-                    "'void'");
-            }
-            if (binding_cpp_type.has_value()
-                && *binding_cpp_type == "void") {
-                report(
-                    statement.variable_span,
-                    "malformed semantic state: for-each binding has type "
-                    "'void'");
-            }
-            return;
-        }
-
-        const auto iterable_name =
-            generated_name("tpp_iterable_", *binding_id);
-        const auto binding_name =
-            generated_name("tpp_variable_", *binding_id);
-
-        emit_indentation();
-        output_ << "{\n";
-        ++indentation_level_;
-
-        emit_indentation();
-        output_ << "const " << *iterable_cpp_type << ' ' << iterable_name
-                << " = ";
-        (void)emit_expression(*statement.iterable);
-        output_ << ";\n";
-
-        emit_indentation();
-        output_ << "for ([[maybe_unused]] " << *binding_cpp_type << ' '
-                << binding_name
-                << " : " << iterable_name << ")\n";
-        emit_indentation();
-        output_ << "{\n";
-        ++indentation_level_;
-
-        current_variable_types_.emplace(
-            binding_id->value,
-            *inferred_type);
-        ++loop_depth_;
-        emit_scoped_body(*statement.body);
-        --loop_depth_;
-        current_variable_types_.erase(binding_id->value);
-
-        --indentation_level_;
-        emit_indentation();
-        output_ << "}\n";
-        --indentation_level_;
-        emit_indentation();
-        output_ << "}\n";
-    }
-
-    void emit_statement_node(
-        const SourceSpan span,
-        const ReturnStatement& statement)
+        const LoweredReturnStatement& statement)
     {
         if (current_function_ == nullptr) {
             report(
                 span,
-                "malformed semantic state: return is outside a function");
-            return;
-        }
-        const auto* function = function_symbol(*current_function_);
-        if (function == nullptr) {
+                "malformed lowered state: return is outside a function");
             return;
         }
 
         if (statement.value == nullptr) {
-            if (function->return_type != context_.types.void_type()) {
+            if (current_function_->return_type != types_.void_type()) {
                 report(
                     span,
                     current_function_->is_main
                         ? "C++ code generation requires a value in a 'main' "
                           "return statement"
-                        : "malformed semantic state: non-void return has no "
+                        : "malformed lowered state: non-void return has no "
                           "value");
                 return;
             }
@@ -1570,25 +1136,16 @@ private:
             return;
         }
 
-        if (function->return_type == context_.types.void_type()) {
+        if (current_function_->return_type == types_.void_type()) {
             report(
                 statement.value->span,
-                "malformed semantic state: void return has a value");
+                "malformed lowered state: void return has a value");
             return;
         }
-
-        const auto value_type =
-            context_.type_info.type_of(*statement.value);
-        if (!value_type.has_value()) {
+        if (statement.value->type != current_function_->return_type) {
             report(
                 statement.value->span,
-                "malformed semantic state: expression has no type");
-            return;
-        }
-        if (*value_type != function->return_type) {
-            report(
-                statement.value->span,
-                "malformed semantic state: return value type does not match "
+                "malformed lowered state: return value type does not match "
                 "its function");
             return;
         }
@@ -1613,25 +1170,28 @@ private:
         output_ << ";\n";
     }
 
-    void emit_statement_node(const SourceSpan span, const BreakStatement&)
+    void emit_statement_node(
+        const SourceSpan span,
+        const LoweredBreakStatement&)
     {
         if (loop_depth_ == 0) {
             report(
                 span,
-                "malformed semantic state: break statement is outside a "
-                "loop");
+                "malformed lowered state: break statement is outside a loop");
             return;
         }
         emit_indentation();
         output_ << "break;\n";
     }
 
-    void emit_statement_node(const SourceSpan span, const ContinueStatement&)
+    void emit_statement_node(
+        const SourceSpan span,
+        const LoweredContinueStatement&)
     {
         if (loop_depth_ == 0) {
             report(
                 span,
-                "malformed semantic state: continue statement is outside a "
+                "malformed lowered state: continue statement is outside a "
                 "loop");
             return;
         }
@@ -1641,7 +1201,7 @@ private:
 
     void emit_statement_node(
         const SourceSpan span,
-        const BlockStatement& statement)
+        const LoweredBlockStatement& statement)
     {
         if (loop_depth_ == 0) {
             report(
@@ -1651,7 +1211,9 @@ private:
             return;
         }
         if (statement.block == nullptr) {
-            report(span, "malformed AST: nested block is missing its body");
+            report(
+                span,
+                "malformed lowered state: nested block is missing its body");
             return;
         }
 
@@ -1664,123 +1226,388 @@ private:
         output_ << "}\n";
     }
 
-    [[nodiscard]] const CallExpression* unwrap_call(
-        const Expression& expression) const
+    [[nodiscard]] bool validate_range(
+        const SourceSpan span,
+        const LoweredRangeStatement& statement)
     {
-        if (const auto* call = std::get_if<CallExpression>(&expression.node)) {
-            return call;
+        auto valid = true;
+        if (statement.binding_type != types_.integer_type()) {
+            report(
+                statement.binding_span,
+                "malformed lowered state: for-range binding does not have "
+                "type 'int'");
+            valid = false;
         }
-        const auto* parenthesized =
-            std::get_if<ParenthesizedExpression>(&expression.node);
-        if (parenthesized == nullptr || parenthesized->expression == nullptr) {
-            return nullptr;
-        }
-        return unwrap_call(*parenthesized->expression);
-    }
-
-    [[nodiscard]] const IdentifierExpression* unwrap_callable_identifier(
-        const Expression& expression) const
-    {
-        if (const auto* identifier =
-                std::get_if<IdentifierExpression>(&expression.node)) {
-            return identifier;
-        }
-        const auto* parenthesized =
-            std::get_if<ParenthesizedExpression>(&expression.node);
-        if (parenthesized == nullptr || parenthesized->expression == nullptr) {
-            return nullptr;
-        }
-        return unwrap_callable_identifier(*parenthesized->expression);
-    }
-
-    [[nodiscard]] std::optional<ResolutionTarget> resolve_call_target(
-        const CallExpression& call,
-        const SourceSpan call_span)
-    {
-        if (call.callee == nullptr) {
-            report(call_span, "malformed AST: call has no callee");
-            return std::nullopt;
-        }
-        const auto* identifier = unwrap_callable_identifier(*call.callee);
-        if (identifier == nullptr) {
-            if (unwrap_member_access(*call.callee) != nullptr) {
+        if (statement.begin_value == nullptr
+            || statement.end_value == nullptr) {
+            report(
+                span,
+                "malformed lowered state: for-range statement is missing a "
+                "bound");
+            valid = false;
+        } else {
+            if (statement.begin_value->type != types_.integer_type()) {
                 report(
-                    call.callee->span,
-                    "C++ code generation does not support member access yet");
-                return std::nullopt;
+                    statement.begin_value->span,
+                    "malformed lowered state: for-range begin bound does not "
+                    "have type 'int'");
+                valid = false;
             }
-            report(
-                call.callee->span,
-                "C++ code generation only supports direct function calls "
-                "yet");
-            return std::nullopt;
+            if (statement.end_value->type != types_.integer_type()) {
+                report(
+                    statement.end_value->span,
+                    "malformed lowered state: for-range end bound does not "
+                    "have type 'int'");
+                valid = false;
+            }
         }
-        const auto resolution = context_.resolutions.resolution_for(*identifier);
-        if (!resolution.has_value()) {
+        if (statement.body == nullptr) {
             report(
-                call.callee->span,
-                "malformed semantic state: call callee has no resolution");
-            return std::nullopt;
+                span,
+                "malformed lowered state: for-range statement is missing a "
+                "body");
+            valid = false;
         }
-        return resolution;
+        if (current_parameter_types_.contains(statement.binding.value)
+            || current_variable_types_.contains(statement.binding.value)
+            || seen_symbol_ids_.contains(statement.binding.value)) {
+            report(
+                statement.binding_span,
+                "malformed lowered state: for-range binding symbol is "
+                "already active or reused");
+            valid = false;
+        }
+
+        valid = validate_temporary(
+                    statement.begin_storage,
+                    TempRole::range_begin,
+                    statement.binding,
+                    types_.integer_type())
+            && valid;
+        valid = validate_temporary(
+                    statement.end_storage,
+                    TempRole::range_end,
+                    statement.binding,
+                    types_.integer_type())
+            && valid;
+        valid = validate_temporary(
+                    statement.cursor_storage,
+                    TempRole::range_cursor,
+                    statement.binding,
+                    types_.integer_type())
+            && valid;
+
+        const auto exclusive =
+            statement.condition_kind
+                == LoweredRangeConditionKind::cursor_less_than_end
+            && statement.step_kind
+                == LoweredRangeStepKind::increment_cursor;
+        const auto inclusive =
+            statement.condition_kind == LoweredRangeConditionKind::active
+            && statement.step_kind
+                == LoweredRangeStepKind::update_active_then_guarded_increment;
+
+        if (exclusive) {
+            if (statement.active_storage.has_value()) {
+                report(
+                    statement.active_storage->span,
+                    "malformed lowered state: exclusive range unexpectedly "
+                    "has active storage");
+                valid = false;
+                valid = validate_temporary(
+                            *statement.active_storage,
+                            TempRole::range_active,
+                            statement.binding,
+                            types_.boolean_type())
+                    && valid;
+            }
+        } else if (inclusive) {
+            if (!statement.active_storage.has_value()) {
+                report(
+                    span,
+                    "malformed lowered state: inclusive range has no active "
+                    "storage");
+                valid = false;
+            } else {
+                valid = validate_temporary(
+                            *statement.active_storage,
+                            TempRole::range_active,
+                            statement.binding,
+                            types_.boolean_type())
+                    && valid;
+            }
+        } else {
+            report(
+                span,
+                "malformed lowered state: inconsistent range condition and "
+                "step");
+            valid = false;
+            if (statement.active_storage.has_value()) {
+                valid = validate_temporary(
+                            *statement.active_storage,
+                            TempRole::range_active,
+                            statement.binding,
+                            types_.boolean_type())
+                    && valid;
+            }
+        }
+
+        return valid;
     }
 
-    [[nodiscard]] const MemberAccessExpression* unwrap_member_access(
-        const Expression& expression) const
+    void emit_statement_node(
+        const SourceSpan span,
+        const LoweredRangeStatement& statement)
     {
-        if (const auto* member =
-                std::get_if<MemberAccessExpression>(&expression.node)) {
-            return member;
+        if (!validate_range(span, statement)) {
+            return;
         }
-        const auto* parenthesized =
-            std::get_if<ParenthesizedExpression>(&expression.node);
-        if (parenthesized == nullptr || parenthesized->expression == nullptr) {
-            return nullptr;
+
+        const auto begin_name = temporary_name(statement.begin_storage);
+        const auto end_name = temporary_name(statement.end_storage);
+        const auto cursor_name = temporary_name(statement.cursor_storage);
+        const auto active_name = statement.active_storage.has_value()
+            ? temporary_name(*statement.active_storage)
+            : std::optional<std::string>{};
+        if (!begin_name.has_value() || !end_name.has_value()
+            || !cursor_name.has_value()
+            || (statement.active_storage.has_value()
+                && !active_name.has_value())) {
+            return;
         }
-        return unwrap_member_access(*parenthesized->expression);
+
+        auto enclosing_variables = current_variable_types_;
+        auto enclosing_temporaries = current_temporaries_;
+
+        emit_indentation();
+        output_ << "{\n";
+        ++indentation_level_;
+
+        emit_indentation();
+        output_ << "const std::int64_t " << *begin_name << " = ";
+        (void)emit_expression(*statement.begin_value);
+        output_ << ";\n";
+        (void)activate_temporary(statement.begin_storage);
+
+        emit_indentation();
+        output_ << "const std::int64_t " << *end_name << " = ";
+        (void)emit_expression(*statement.end_value);
+        output_ << ";\n";
+        (void)activate_temporary(statement.end_storage);
+
+        if (statement.active_storage.has_value()) {
+            emit_indentation();
+            output_ << "bool " << *active_name << " = " << *begin_name
+                    << " <= " << *end_name << ";\n";
+            (void)activate_temporary(*statement.active_storage);
+        }
+
+        emit_indentation();
+        output_ << "for (std::int64_t " << *cursor_name << " = "
+                << *begin_name << "; ";
+        if (statement.condition_kind
+            == LoweredRangeConditionKind::cursor_less_than_end) {
+            output_ << *cursor_name << " < " << *end_name << "; ++"
+                    << *cursor_name;
+        } else {
+            output_ << *active_name << "; " << *active_name << " = "
+                    << *cursor_name << " != " << *end_name << ", "
+                    << *cursor_name << " += " << *active_name
+                    << " ? std::int64_t{1} : std::int64_t{0}";
+        }
+        output_ << ")\n";
+        emit_indentation();
+        output_ << "{\n";
+        ++indentation_level_;
+        (void)activate_temporary(statement.cursor_storage);
+
+        emit_indentation();
+        output_ << "[[maybe_unused]] std::int64_t "
+                << generated_name("tpp_variable_", statement.binding)
+                << " = " << *cursor_name << ";\n";
+
+        (void)introduce_variable(
+            statement.binding,
+            statement.binding_type,
+            statement.binding_span,
+            "for-range binding");
+        ++loop_depth_;
+        emit_scoped_body(*statement.body);
+        --loop_depth_;
+
+        --indentation_level_;
+        emit_indentation();
+        output_ << "}\n";
+        --indentation_level_;
+        emit_indentation();
+        output_ << "}\n";
+
+        current_variable_types_ = std::move(enclosing_variables);
+        current_temporaries_ = std::move(enclosing_temporaries);
+    }
+
+    [[nodiscard]] bool validate_foreach(
+        const SourceSpan span,
+        const LoweredForEachStatement& statement)
+    {
+        auto valid = true;
+        if (statement.iterable == nullptr) {
+            report(
+                span,
+                "malformed lowered state: for-each statement is missing an "
+                "iterable");
+            valid = false;
+        } else if (statement.iterable->type != statement.iterable_type) {
+            report(
+                statement.iterable->span,
+                "malformed lowered state: for-each iterable type does not "
+                "match its expression");
+            valid = false;
+        }
+        if (statement.body == nullptr) {
+            report(
+                span,
+                "malformed lowered state: for-each statement is missing a "
+                "body");
+            valid = false;
+        }
+        if (current_parameter_types_.contains(statement.binding.value)
+            || current_variable_types_.contains(statement.binding.value)
+            || seen_symbol_ids_.contains(statement.binding.value)) {
+            report(
+                statement.binding_span,
+                "malformed lowered state: for-each binding symbol is already "
+                "active or reused");
+            valid = false;
+        }
+
+        auto expected_binding = std::optional<TypeId>{};
+        if (statement.iterable_type == types_.string_type()) {
+            expected_binding = types_.character_type();
+        } else {
+            const auto descriptor = types_.lookup(statement.iterable_type);
+            const auto* vector = descriptor.has_value()
+                ? std::get_if<SemanticVectorType>(&*descriptor)
+                : nullptr;
+            if (vector != nullptr) {
+                expected_binding = vector->element_type;
+            }
+        }
+        if (!expected_binding.has_value()) {
+            report(
+                statement.iterable != nullptr
+                    ? statement.iterable->span
+                    : span,
+                "malformed lowered state: for-each iterable is not a string "
+                "or vector");
+            valid = false;
+        } else if (statement.binding_type != *expected_binding) {
+            report(
+                statement.binding_span,
+                "malformed lowered state: for-each binding type does not "
+                "match its iterable");
+            valid = false;
+        }
+
+        valid = validate_temporary(
+                    statement.snapshot_storage,
+                    TempRole::iterable_snapshot,
+                    statement.binding,
+                    statement.iterable_type)
+            && valid;
+        return valid;
+    }
+
+    void emit_statement_node(
+        const SourceSpan span,
+        const LoweredForEachStatement& statement)
+    {
+        if (!validate_foreach(span, statement)) {
+            return;
+        }
+
+        const auto iterable_type = cpp_type(
+            statement.iterable_type,
+            statement.iterable->span,
+            "for-each iterable");
+        const auto binding_type = cpp_type(
+            statement.binding_type,
+            statement.binding_span,
+            "for-each binding");
+        const auto snapshot_name = temporary_name(statement.snapshot_storage);
+        if (!iterable_type.has_value() || !binding_type.has_value()
+            || !snapshot_name.has_value()
+            || *iterable_type == "void" || *binding_type == "void") {
+            return;
+        }
+
+        auto enclosing_variables = current_variable_types_;
+        auto enclosing_temporaries = current_temporaries_;
+
+        emit_indentation();
+        output_ << "{\n";
+        ++indentation_level_;
+
+        emit_indentation();
+        output_ << "const " << *iterable_type << ' ' << *snapshot_name
+                << " = ";
+        (void)emit_expression(*statement.iterable);
+        output_ << ";\n";
+        (void)activate_temporary(statement.snapshot_storage);
+
+        emit_indentation();
+        output_ << "for ([[maybe_unused]] " << *binding_type << ' '
+                << generated_name("tpp_variable_", statement.binding)
+                << " : " << *snapshot_name << ")\n";
+        emit_indentation();
+        output_ << "{\n";
+        ++indentation_level_;
+
+        (void)introduce_variable(
+            statement.binding,
+            statement.binding_type,
+            statement.binding_span,
+            "for-each binding");
+        ++loop_depth_;
+        emit_scoped_body(*statement.body);
+        --loop_depth_;
+
+        --indentation_level_;
+        emit_indentation();
+        output_ << "}\n";
+        --indentation_level_;
+        emit_indentation();
+        output_ << "}\n";
+
+        current_variable_types_ = std::move(enclosing_variables);
+        current_temporaries_ = std::move(enclosing_temporaries);
     }
 
     void emit_print_statement(
-        const Expression& statement_expression,
-        const CallExpression& call)
+        const LoweredExpression& statement_expression,
+        const LoweredBuiltinCallExpression& call)
     {
-        if (!validate_expression_type(statement_expression)) {
-            return;
-        }
-        if (call.arguments.size() != 1) {
+        if (statement_expression.type != types_.void_type()
+            || call.arguments.size() != 1
+            || call.arguments.front() == nullptr) {
             report(
                 statement_expression.span,
-                "malformed semantic state: builtin 'print' does not have "
-                "exactly one argument");
+                "malformed lowered state: builtin 'print' call does not "
+                "match its signature");
             return;
         }
-        if (call.arguments.front() == nullptr) {
-            report(
-                statement_expression.span,
-                "malformed AST: 'print' argument is missing");
-            return;
-        }
+        const auto argument_kind =
+            primitive_kind(call.arguments.front()->type);
         const auto signature =
             builtin_function_signature(BuiltinFunctionKind::print);
-        const auto result_type =
-            context_.type_info.type_of(statement_expression);
-        const auto expected_result =
-            semantic_primitive_type(signature.return_type);
-        const auto argument_type =
-            context_.type_info.type_of(*call.arguments.front());
-        const auto argument_kind = argument_type.has_value()
-            ? semantic_primitive_kind(*argument_type)
-            : std::nullopt;
-        if (!expected_result.has_value() || !result_type.has_value()
-            || *result_type != *expected_result
-            || signature.parameter_types.size() != 1
+        if (signature.parameter_types.size() != 1
             || !argument_kind.has_value()
             || !builtin_parameter_accepts(
                 signature.parameter_types.front(),
                 *argument_kind)) {
             report(
                 statement_expression.span,
-                "malformed semantic state: builtin 'print' call does not "
+                "malformed lowered state: builtin 'print' call does not "
                 "match its signature");
             return;
         }
@@ -1794,64 +1621,39 @@ private:
         output_ << " << '\\n';\n";
     }
 
-    [[nodiscard]] bool validate_expression_type(const Expression& expression)
+    [[nodiscard]] bool emit_expression(const LoweredExpression& expression)
     {
-        const auto type = context_.type_info.type_of(expression);
-        if (!type.has_value()) {
-            report(
-                expression.span,
-                "malformed semantic state: expression has no type");
-            return false;
-        }
-        const auto descriptor = context_.types.lookup(*type);
-        if (!descriptor.has_value()) {
-            report(
-                expression.span,
-                "malformed semantic state: expression has an unknown type");
-            return false;
-        }
-        return true;
-    }
-
-    [[nodiscard]] bool emit_expression(const Expression& expression)
-    {
-        if (!validate_expression_type(expression)) {
-            return false;
-        }
-        const auto result_type = context_.type_info.type_of(expression);
-        if (!result_type.has_value()) {
+        if (!known_type(expression.type, expression.span, "expression")) {
             return false;
         }
         return std::visit(
-            [this, &expression, result_type](const auto& node) {
-                using Node = std::decay_t<decltype(node)>;
-                if constexpr (std::is_same_v<Node, CallExpression>
-                    || std::is_same_v<Node, IdentifierExpression>
-                    || std::is_same_v<Node, IndexExpression>
-                    || std::is_same_v<Node, VectorConstructionExpression>) {
-                    return emit_expression_node(
-                        expression.span,
-                        node,
-                        *result_type);
-                } else {
-                    return emit_expression_node(expression.span, node);
-                }
+            [this, &expression](const auto& node) {
+                return emit_expression_node(expression, node);
             },
             expression.node);
     }
 
     [[nodiscard]] bool emit_expression_node(
-        const SourceSpan span,
-        const IntegerLiteralExpression& expression)
+        const LoweredExpression& expression,
+        const LoweredIntegerLiteralExpression& literal)
     {
-        const auto normalized = normalize_integer_lexeme(expression.lexeme);
+        if (expression.type != types_.integer_type()) {
+            report(
+                expression.span,
+                "malformed lowered state: integer literal has a non-integer "
+                "type");
+            return false;
+        }
+        const auto normalized = normalize_integer_lexeme(literal.lexeme);
         if (!normalized.has_value()) {
-            report(span, "malformed AST: invalid integer literal lexeme");
+            report(
+                expression.span,
+                "malformed lowered state: invalid integer literal lexeme");
             return false;
         }
         if (exceeds_magnitude(*normalized, maximum_integer_magnitude)) {
             report(
-                span,
+                expression.span,
                 "integer literal is outside the supported signed 64-bit "
                 "code-generation range");
             return false;
@@ -1862,74 +1664,72 @@ private:
     }
 
     [[nodiscard]] bool emit_expression_node(
-        SourceSpan,
-        const BooleanLiteralExpression& expression)
+        const LoweredExpression& expression,
+        const LoweredBooleanLiteralExpression& literal)
     {
-        output_ << (expression.value ? "true" : "false");
+        if (expression.type != types_.boolean_type()) {
+            report(
+                expression.span,
+                "malformed lowered state: boolean literal has a non-boolean "
+                "type");
+            return false;
+        }
+        output_ << (literal.value ? "true" : "false");
         return true;
     }
 
     [[nodiscard]] bool emit_expression_node(
-        SourceSpan,
-        const CharacterLiteralExpression& expression)
+        const LoweredExpression& expression,
+        const LoweredCharacterLiteralExpression& literal)
     {
+        if (expression.type != types_.character_type()) {
+            report(
+                expression.span,
+                "malformed lowered state: character literal has a non-char "
+                "type");
+            return false;
+        }
         output_ << '\''
                 << escape_cpp_bytes(
-                       std::string_view{&expression.value, 1},
+                       std::string_view{&literal.value, 1},
                        '\'')
                 << '\'';
         return true;
     }
 
     [[nodiscard]] bool emit_expression_node(
-        SourceSpan,
-        const StringLiteralExpression& expression)
+        const LoweredExpression& expression,
+        const LoweredStringLiteralExpression& literal)
     {
+        if (expression.type != types_.string_type()) {
+            report(
+                expression.span,
+                "malformed lowered state: string literal has a non-string "
+                "type");
+            return false;
+        }
         output_ << "std::string{\""
-                << escape_cpp_bytes(expression.value, '"')
-                << "\", " << expression.value.size() << '}';
+                << escape_cpp_bytes(literal.value, '"')
+                << "\", " << literal.value.size() << '}';
         return true;
     }
 
     [[nodiscard]] bool emit_expression_node(
-        const SourceSpan span,
-        const IdentifierExpression& expression,
-        const TypeId result_type)
+        const LoweredExpression& expression,
+        const LoweredStorageExpression& storage_expression)
     {
-        const auto resolution =
-            context_.resolutions.resolution_for(expression);
-        if (!resolution.has_value()) {
-            report(
-                span,
-                "malformed semantic state: identifier has no resolution");
-            return false;
-        }
-        const auto* id = std::get_if<SymbolId>(&*resolution);
-        if (id == nullptr) {
-            report(
-                span,
-                "malformed semantic state: value identifier resolves to a "
-                "builtin");
-            return false;
-        }
-        const auto storage =
-            storage_reference(*id, span, "identifier reference");
+        const auto storage = storage_reference(
+            storage_expression.storage,
+            expression.span,
+            "storage expression");
         if (!storage.has_value()) {
             return false;
         }
-        if (storage->type != result_type) {
+        if (storage->type != expression.type) {
             report(
-                span,
-                "malformed semantic state: identifier type does not match "
-                "its symbol");
-            return false;
-        }
-        if (!current_variable_types_.contains(id->value)
-            && !current_parameter_ids_.contains(id->value)) {
-            report(
-                span,
-                "C++ code generation only supports int, string, char, or "
-                "vector local identifier expressions yet");
+                expression.span,
+                "malformed lowered state: storage expression type does not "
+                "match its storage");
             return false;
         }
         output_ << storage->generated_name;
@@ -1937,16 +1737,40 @@ private:
     }
 
     [[nodiscard]] bool emit_expression_node(
-        const SourceSpan span,
-        const UnaryExpression& expression)
+        const LoweredExpression& expression,
+        const LoweredUnaryExpression& unary)
     {
-        if (expression.operand == nullptr) {
-            report(span, "malformed AST: unary expression has no operand");
+        if (unary.operand == nullptr) {
+            report(
+                expression.span,
+                "malformed lowered state: unary expression has no operand");
+            return false;
+        }
+        const auto spelling = unary_operator_spelling(unary.operator_kind);
+        if (!spelling.has_value()) {
+            report(
+                expression.span,
+                "malformed lowered state: unknown unary operator");
             return false;
         }
 
-        if (expression.operator_kind == UnaryOperator::minus) {
-            const auto* integer = unwrap_integer_literal(*expression.operand);
+        const auto expected_type =
+            unary.operator_kind == LoweredUnaryOperator::logical_not
+            ? types_.boolean_type()
+            : types_.integer_type();
+        if (expression.type != expected_type
+            || unary.operand->type != expected_type) {
+            report(
+                expression.span,
+                "malformed lowered state: unary expression types do not "
+                "match its operator");
+            return false;
+        }
+
+        if (unary.operator_kind == LoweredUnaryOperator::minus) {
+            const auto* integer = unwrap_integer_literal(
+                *unary.operand,
+                types_.integer_type());
             if (integer != nullptr) {
                 const auto normalized =
                     normalize_integer_lexeme(integer->lexeme);
@@ -1960,14 +1784,8 @@ private:
             }
         }
 
-        const auto spelling = unary_operator_spelling(expression.operator_kind);
-        if (!spelling.has_value()) {
-            report(span, "malformed AST: unknown unary operator");
-            return false;
-        }
-
         output_ << '(' << *spelling;
-        if (!emit_expression(*expression.operand)) {
+        if (!emit_expression(*unary.operand)) {
             output_ << ')';
             return false;
         }
@@ -1975,29 +1793,94 @@ private:
         return true;
     }
 
-    [[nodiscard]] bool emit_expression_node(
-        const SourceSpan span,
-        const BinaryExpression& expression)
+    [[nodiscard]] bool validate_binary_types(
+        const LoweredExpression& expression,
+        const LoweredBinaryExpression& binary)
     {
-        if (expression.left == nullptr || expression.right == nullptr) {
+        const auto left_type = binary.left->type;
+        const auto right_type = binary.right->type;
+        auto valid = false;
+
+        switch (binary.operator_kind) {
+        case LoweredBinaryOperator::add:
+            valid = left_type == right_type
+                && (left_type == types_.integer_type()
+                    || left_type == types_.string_type())
+                && expression.type == left_type;
+            break;
+        case LoweredBinaryOperator::subtract:
+        case LoweredBinaryOperator::multiply:
+        case LoweredBinaryOperator::divide:
+        case LoweredBinaryOperator::remainder:
+            valid = left_type == types_.integer_type()
+                && right_type == types_.integer_type()
+                && expression.type == types_.integer_type();
+            break;
+        case LoweredBinaryOperator::logical_or:
+        case LoweredBinaryOperator::logical_and:
+            valid = left_type == types_.boolean_type()
+                && right_type == types_.boolean_type()
+                && expression.type == types_.boolean_type();
+            break;
+        case LoweredBinaryOperator::less:
+        case LoweredBinaryOperator::less_equal:
+        case LoweredBinaryOperator::greater:
+        case LoweredBinaryOperator::greater_equal:
+            valid = left_type == right_type
+                && (left_type == types_.integer_type()
+                    || left_type == types_.string_type())
+                && expression.type == types_.boolean_type();
+            break;
+        case LoweredBinaryOperator::equal:
+        case LoweredBinaryOperator::not_equal: {
+            const auto primitive = primitive_kind(left_type);
+            valid = left_type == right_type
+                && primitive.has_value()
+                && *primitive != PrimitiveTypeKind::void_type
+                && expression.type == types_.boolean_type();
+            break;
+        }
+        }
+
+        if (!valid) {
             report(
-                span,
-                "malformed AST: binary expression is missing an operand");
+                expression.span,
+                "malformed lowered state: binary expression types do not "
+                "match its operator");
+        }
+        return valid;
+    }
+
+    [[nodiscard]] bool emit_expression_node(
+        const LoweredExpression& expression,
+        const LoweredBinaryExpression& binary)
+    {
+        if (binary.left == nullptr || binary.right == nullptr) {
+            report(
+                expression.span,
+                "malformed lowered state: binary expression is missing an "
+                "operand");
             return false;
         }
-        const auto spelling = binary_operator_spelling(expression.operator_kind);
+        const auto spelling =
+            binary_operator_spelling(binary.operator_kind);
         if (!spelling.has_value()) {
-            report(span, "malformed AST: unknown binary operator");
+            report(
+                expression.span,
+                "malformed lowered state: unknown binary operator");
+            return false;
+        }
+        if (!validate_binary_types(expression, binary)) {
             return false;
         }
 
         output_ << '(';
-        if (!emit_expression(*expression.left)) {
+        if (!emit_expression(*binary.left)) {
             output_ << ')';
             return false;
         }
         output_ << ' ' << *spelling << ' ';
-        if (!emit_expression(*expression.right)) {
+        if (!emit_expression(*binary.right)) {
             output_ << ')';
             return false;
         }
@@ -2006,48 +1889,67 @@ private:
     }
 
     [[nodiscard]] bool emit_expression_node(
-        const SourceSpan span,
-        const CallExpression& expression,
-        const TypeId result_type)
+        const LoweredExpression& expression,
+        const LoweredUserCallExpression& call)
     {
-        if (expression.callee != nullptr) {
-            if (const auto* member =
-                    unwrap_member_access(*expression.callee)) {
-                return emit_member_call(
-                    span,
-                    expression,
-                    *member,
-                    result_type);
+        const auto target = functions_.find(call.function.value);
+        if (target == functions_.end()) {
+            report(
+                call.callee_span,
+                "malformed lowered state: user call has an unknown function "
+                "symbol");
+            return false;
+        }
+        const auto& function = *target->second;
+        if (function.is_main
+            || (main_symbol_.has_value() && call.function == *main_symbol_)) {
+            report(
+                call.callee_span,
+                "C++ code generation cannot call 'main'");
+            return false;
+        }
+        if (expression.type != function.return_type
+            || call.arguments.size() != function.parameters.size()) {
+            report(
+                expression.span,
+                "malformed lowered state: user call does not match its "
+                "function signature");
+            return false;
+        }
+        for (std::size_t index = 0; index < call.arguments.size(); ++index) {
+            const auto& argument = call.arguments[index];
+            if (argument == nullptr
+                || argument->type != function.parameters[index].type) {
+                report(
+                    argument != nullptr ? argument->span : expression.span,
+                    "malformed lowered state: user call argument does not "
+                    "match its function signature");
+                return false;
             }
         }
 
-        const auto target = resolve_call_target(expression, span);
-        if (!target.has_value()) {
-            return false;
+        output_ << generated_name("tpp_function_", call.function) << '(';
+        auto valid = true;
+        for (std::size_t index = 0; index < call.arguments.size(); ++index) {
+            if (index != 0) {
+                output_ << ", ";
+            }
+            if (!emit_expression(*call.arguments[index])) {
+                valid = false;
+            }
         }
-
-        if (const auto* builtin =
-                std::get_if<BuiltinFunctionKind>(&*target)) {
-            return emit_builtin_call(span, expression, *builtin, result_type);
-        }
-
-        return emit_user_call(
-            span,
-            expression,
-            std::get<SymbolId>(*target),
-            result_type);
+        output_ << ')';
+        return valid;
     }
 
-    [[nodiscard]] bool emit_builtin_call(
-        const SourceSpan span,
-        const CallExpression& call,
-        const BuiltinFunctionKind builtin,
-        const TypeId result_type)
+    [[nodiscard]] bool emit_expression_node(
+        const LoweredExpression& expression,
+        const LoweredBuiltinCallExpression& call)
     {
-        switch (builtin) {
+        switch (call.builtin) {
         case BuiltinFunctionKind::print:
             report(
-                span,
+                expression.span,
                 "C++ code generation only supports builtin 'print' as an "
                 "expression statement");
             return false;
@@ -2058,52 +1960,42 @@ private:
         case BuiltinFunctionKind::substring:
             break;
         default:
-            report(span, "malformed semantic state: unknown builtin function");
+            report(
+                call.callee_span,
+                "malformed lowered state: unknown builtin function");
             return false;
         }
 
-        const auto signature = builtin_function_signature(builtin);
-        const auto expected_result =
-            semantic_primitive_type(signature.return_type);
-        if (!expected_result.has_value() || result_type != *expected_result) {
+        const auto signature = builtin_function_signature(call.builtin);
+        const auto result_type = primitive_type(signature.return_type);
+        if (!result_type.has_value() || expression.type != *result_type
+            || call.arguments.size() != signature.parameter_types.size()) {
             report(
-                span,
-                "malformed semantic state: builtin call result type does not "
-                "match its signature");
-            return false;
-        }
-        if (call.arguments.size() != signature.parameter_types.size()) {
-            report(
-                span,
-                "malformed semantic state: builtin '"
-                    + std::string{builtin_name(builtin)}
-                    + "' has an unexpected number of arguments");
+                expression.span,
+                "malformed lowered state: builtin '"
+                    + std::string{builtin_name(call.builtin)}
+                    + "' does not match its signature");
             return false;
         }
         for (std::size_t index = 0; index < call.arguments.size(); ++index) {
             const auto& argument = call.arguments[index];
-            if (argument == nullptr) {
-                report(span, "malformed AST: builtin call argument is missing");
-                return false;
-            }
-            const auto argument_type = context_.type_info.type_of(*argument);
-            const auto argument_kind = argument_type.has_value()
-                ? semantic_primitive_kind(*argument_type)
+            const auto argument_kind = argument != nullptr
+                ? primitive_kind(argument->type)
                 : std::nullopt;
-            if (!argument_kind.has_value()
+            if (argument == nullptr || !argument_kind.has_value()
                 || !builtin_parameter_accepts(
                     signature.parameter_types[index],
                     *argument_kind)) {
                 report(
-                    argument->span,
-                    "malformed semantic state: builtin argument type does not "
+                    argument != nullptr ? argument->span : expression.span,
+                    "malformed lowered state: builtin argument type does not "
                     "match its signature");
                 return false;
             }
         }
 
         uses_runtime_ = true;
-        switch (builtin) {
+        switch (call.builtin) {
         case BuiltinFunctionKind::read_int:
             output_ << "tpp::runtime::read_int()";
             return true;
@@ -2138,95 +2030,73 @@ private:
             break;
         }
 
-        report(span, "malformed semantic state: unknown builtin function");
+        report(
+            call.callee_span,
+            "malformed lowered state: unknown builtin function");
         return false;
     }
 
-    [[nodiscard]] bool emit_member_call(
-        const SourceSpan span,
-        const CallExpression& call,
-        const MemberAccessExpression& member,
-        const TypeId result_type)
+    [[nodiscard]] bool emit_expression_node(
+        const LoweredExpression& expression,
+        const LoweredMemberCallExpression& call)
     {
-        const auto kind = context_.type_info.member_for(member);
-        if (!kind.has_value()) {
+        if (call.receiver == nullptr) {
             report(
-                call.callee != nullptr ? call.callee->span : span,
-                "malformed semantic state: string member has no semantic "
-                "identity");
+                expression.span,
+                "malformed lowered state: string member has no receiver");
             return false;
         }
-        if (member.base == nullptr) {
-            report(span, "malformed AST: string member has no receiver");
-            return false;
-        }
-
-        const auto receiver_type = context_.type_info.type_of(*member.base);
-        if (!receiver_type.has_value()
-            || *receiver_type != context_.types.string_type()) {
+        if (call.receiver->type != types_.string_type()) {
             report(
-                member.base->span,
-                "malformed semantic state: string member receiver does not "
+                call.receiver->span,
+                "malformed lowered state: string member receiver does not "
                 "have type 'string'");
             return false;
         }
 
         auto expected_arity = std::size_t{0};
-        auto expected_result = context_.types.integer_type();
+        auto expected_result = types_.integer_type();
         auto helper = std::string_view{"tpp::runtime::string_length("};
-        switch (*kind) {
+        switch (call.member) {
         case MemberKind::string_length:
             break;
         case MemberKind::string_push:
             expected_arity = 1;
-            expected_result = context_.types.void_type();
+            expected_result = types_.void_type();
             helper = "tpp::runtime::string_push(";
             break;
         default:
             report(
-                call.callee != nullptr ? call.callee->span : span,
-                "malformed semantic state: unknown string member identity");
+                call.member_span,
+                "malformed lowered state: unknown string member identity");
             return false;
         }
-        if (result_type != expected_result) {
+        if (expression.type != expected_result
+            || call.arguments.size() != expected_arity) {
             report(
-                span,
-                "malformed semantic state: string member call result type "
-                "does not match its member");
+                expression.span,
+                "malformed lowered state: string member call does not match "
+                "its member signature");
             return false;
         }
-        if (call.arguments.size() != expected_arity) {
+        if (call.member == MemberKind::string_push
+            && (call.arguments.front() == nullptr
+                || call.arguments.front()->type
+                    != types_.character_type())) {
             report(
-                span,
-                "malformed semantic state: string member call has an "
-                "unexpected number of arguments");
+                expression.span,
+                "malformed lowered state: string push argument does not have "
+                "type 'char'");
             return false;
-        }
-        if (*kind == MemberKind::string_push
-            && call.arguments.front() == nullptr) {
-            report(span, "malformed AST: string push argument is missing");
-            return false;
-        }
-        if (*kind == MemberKind::string_push) {
-            const auto argument_type =
-                context_.type_info.type_of(*call.arguments.front());
-            if (!argument_type.has_value()
-                || *argument_type != context_.types.character_type()) {
-                report(
-                    call.arguments.front()->span,
-                    "malformed semantic state: string push argument does not "
-                    "have type 'char'");
-                return false;
-            }
         }
 
         uses_runtime_ = true;
         output_ << helper;
-        if (!emit_expression(*member.base)) {
+        if (!emit_expression(*call.receiver)) {
             output_ << ')';
             return false;
         }
-        if (*kind == MemberKind::string_push) {
+        if (call.member == MemberKind::string_push) {
             output_ << ", ";
             if (!emit_expression(*call.arguments.front())) {
                 output_ << ')';
@@ -2237,127 +2107,40 @@ private:
         return true;
     }
 
-    [[nodiscard]] bool emit_user_call(
-        const SourceSpan span,
-        const CallExpression& call,
-        const SymbolId function_id,
-        const TypeId result_type)
-    {
-        const auto callee_span =
-            call.callee != nullptr ? call.callee->span : span;
-        const auto* entry = symbol(function_id, callee_span, "call callee");
-        if (entry == nullptr) {
-            return false;
-        }
-        const auto* function = std::get_if<FunctionSymbol>(&entry->data);
-        if (function == nullptr) {
-            report(
-                callee_span,
-                "malformed semantic state: resolved call target is not a "
-                "function");
-            return false;
-        }
-        if (main_symbol_.has_value() && function_id == *main_symbol_) {
-            report(
-                callee_span,
-                "C++ code generation cannot call 'main'");
-            return false;
-        }
-        if (!top_level_function_ids_.contains(function_id.value)) {
-            report(
-                callee_span,
-                "C++ code generation does not support calls to nested "
-                "functions yet");
-            return false;
-        }
-        if (call.arguments.size() != function->parameter_types.size()) {
-            report(
-                span,
-                "malformed semantic state: call arity does not match "
-                "resolved function");
-            return false;
-        }
-        if (result_type != function->return_type) {
-            report(
-                span,
-                "malformed semantic state: call result type does not match "
-                "resolved function");
-            return false;
-        }
-
-        for (std::size_t index = 0; index < call.arguments.size(); ++index) {
-            const auto& argument = call.arguments[index];
-            if (argument == nullptr) {
-                report(span, "malformed AST: call argument is missing");
-                return false;
-            }
-            const auto argument_type = context_.type_info.type_of(*argument);
-            if (!argument_type.has_value()
-                || *argument_type != function->parameter_types[index]) {
-                report(
-                    argument->span,
-                    "malformed semantic state: call argument type does not "
-                    "match resolved function");
-                return false;
-            }
-        }
-
-        output_ << generated_name("tpp_function_", function_id) << '(';
-        auto valid = true;
-        for (std::size_t index = 0; index < call.arguments.size(); ++index) {
-            if (index != 0) {
-                output_ << ", ";
-            }
-            if (!emit_expression(*call.arguments[index])) {
-                valid = false;
-            }
-        }
-        output_ << ')';
-        return valid;
-    }
-
     [[nodiscard]] bool emit_expression_node(
-        const SourceSpan span,
-        const IndexExpression& expression,
-        const TypeId result_type)
+        const LoweredExpression& expression,
+        const LoweredIndexExpression& index)
     {
-        if (expression.base == nullptr || expression.index == nullptr) {
+        if (index.base == nullptr || index.index == nullptr) {
             report(
-                span,
-                "malformed AST: index expression is missing an operand");
+                expression.span,
+                "malformed lowered state: index expression is missing an "
+                "operand");
             return false;
         }
-        const auto base_type = context_.type_info.type_of(*expression.base);
-        const auto index_type = context_.type_info.type_of(*expression.index);
-        if (!base_type.has_value() || !index_type.has_value()) {
+        if (index.container_type != index.base->type
+            || index.index->type != types_.integer_type()) {
             report(
-                span,
-                "malformed semantic state: index expression operand has no "
-                "type");
-            return false;
-        }
-        if (*index_type != context_.types.integer_type()) {
-            report(
-                expression.index->span,
-                "malformed semantic state: index does not have type "
-                "'int'");
+                expression.span,
+                "malformed lowered state: index operand types do not match "
+                "its recorded container");
             return false;
         }
 
         auto helper = std::string_view{};
         auto expected_result = std::optional<TypeId>{};
-        if (*base_type == context_.types.string_type()) {
+        if (index.container_type == types_.string_type()) {
             helper = "tpp::runtime::string_index(";
-            expected_result = context_.types.character_type();
+            expected_result = types_.character_type();
         } else {
-            const auto descriptor = context_.types.lookup(*base_type);
+            const auto descriptor = types_.lookup(index.container_type);
             const auto* vector = descriptor.has_value()
                 ? std::get_if<SemanticVectorType>(&*descriptor)
                 : nullptr;
             if (vector == nullptr) {
                 report(
-                    expression.base->span,
-                    "malformed semantic state: index base is not a string or "
+                    index.base->span,
+                    "malformed lowered state: index base is not a string or "
                     "vector");
                 return false;
             }
@@ -2365,22 +2148,23 @@ private:
             expected_result = vector->element_type;
             uses_vector_ = true;
         }
-        if (!expected_result.has_value() || result_type != *expected_result) {
+        if (!expected_result.has_value()
+            || expression.type != *expected_result) {
             report(
-                span,
-                "malformed semantic state: index result type does not match "
+                expression.span,
+                "malformed lowered state: index result type does not match "
                 "its base type");
             return false;
         }
 
         uses_runtime_ = true;
         output_ << helper;
-        if (!emit_expression(*expression.base)) {
+        if (!emit_expression(*index.base)) {
             output_ << ')';
             return false;
         }
         output_ << ", ";
-        if (!emit_expression(*expression.index)) {
+        if (!emit_expression(*index.index)) {
             output_ << ')';
             return false;
         }
@@ -2389,83 +2173,59 @@ private:
     }
 
     [[nodiscard]] bool emit_expression_node(
-        const SourceSpan span,
-        const MemberAccessExpression&)
+        const LoweredExpression& expression,
+        const LoweredVectorConstructionExpression& construction)
     {
-        report(span, "C++ code generation does not support member access yet");
-        return false;
-    }
-
-    [[nodiscard]] bool emit_expression_node(
-        const SourceSpan span,
-        const VectorConstructionExpression& expression,
-        const TypeId result_type)
-    {
-        const auto descriptor = context_.types.lookup(result_type);
+        const auto descriptor = types_.lookup(expression.type);
         const auto* vector = descriptor.has_value()
             ? std::get_if<SemanticVectorType>(&*descriptor)
             : nullptr;
-        if (vector == nullptr) {
+        if (vector == nullptr
+            || vector->element_type != construction.element_type) {
             report(
-                span,
-                "malformed semantic state: vector construction result has a "
-                "non-vector type");
+                expression.span,
+                "malformed lowered state: vector construction type does not "
+                "match its element type");
             return false;
         }
-        if (!syntax_type_matches(expression.type, result_type)) {
+        if (construction.arguments.size() > 2) {
             report(
-                expression.type.span,
-                "malformed semantic state: vector construction semantic type "
-                "does not match its syntax type");
-            return false;
-        }
-        if (expression.arguments.size() > 2) {
-            report(
-                span,
-                "malformed semantic state: vector construction has an "
+                expression.span,
+                "malformed lowered state: vector construction has an "
                 "unexpected number of arguments");
             return false;
         }
-
         for (std::size_t index = 0;
-             index < expression.arguments.size();
+             index < construction.arguments.size();
              ++index) {
-            const auto& argument = expression.arguments[index];
-            if (argument == nullptr) {
-                report(
-                    span,
-                    "malformed AST: vector construction argument is missing");
-                return false;
-            }
-            const auto argument_type = context_.type_info.type_of(*argument);
+            const auto& argument = construction.arguments[index];
             const auto expected_type = index == 0
-                ? context_.types.integer_type()
-                : vector->element_type;
-            if (!argument_type.has_value()
-                || *argument_type != expected_type) {
+                ? types_.integer_type()
+                : construction.element_type;
+            if (argument == nullptr || argument->type != expected_type) {
                 report(
-                    argument->span,
-                    "malformed semantic state: vector construction argument "
+                    argument != nullptr ? argument->span : expression.span,
+                    "malformed lowered state: vector construction argument "
                     "type does not match its position");
                 return false;
             }
         }
 
         const auto vector_type = cpp_type(
-            result_type,
-            expression.type.span,
+            expression.type,
+            expression.span,
             "vector construction");
         if (!vector_type.has_value()) {
             return false;
         }
-        if (expression.arguments.empty()) {
+        if (construction.arguments.empty()) {
             output_ << *vector_type << "{}";
             return true;
         }
 
         const auto element_type = cpp_type(
-            vector->element_type,
-            expression.type.span,
+            construction.element_type,
+            expression.span,
             "vector element");
         if (!element_type.has_value() || *element_type == "void") {
             return false;
@@ -2474,12 +2234,12 @@ private:
         output_ << "tpp::runtime::make_vector<" << *element_type << ">(";
         auto valid = true;
         for (std::size_t index = 0;
-             index < expression.arguments.size();
+             index < construction.arguments.size();
              ++index) {
             if (index != 0) {
                 output_ << ", ";
             }
-            if (!emit_expression(*expression.arguments[index])) {
+            if (!emit_expression(*construction.arguments[index])) {
                 valid = false;
             }
         }
@@ -2488,18 +2248,26 @@ private:
     }
 
     [[nodiscard]] bool emit_expression_node(
-        const SourceSpan span,
-        const ParenthesizedExpression& expression)
+        const LoweredExpression& expression,
+        const LoweredGroupedExpression& grouped)
     {
-        if (expression.expression == nullptr) {
+        if (grouped.expression == nullptr) {
             report(
-                span,
-                "malformed AST: parenthesized expression has no expression");
+                expression.span,
+                "malformed lowered state: grouped expression has no "
+                "expression");
+            return false;
+        }
+        if (grouped.expression->type != expression.type) {
+            report(
+                expression.span,
+                "malformed lowered state: grouped expression type does not "
+                "match its operand");
             return false;
         }
 
         output_ << '(';
-        if (!emit_expression(*expression.expression)) {
+        if (!emit_expression(*grouped.expression)) {
             output_ << ')';
             return false;
         }
@@ -2507,16 +2275,20 @@ private:
         return true;
     }
 
-    const CppGenerationContext& context_;
+    const TypeContext& types_;
     DiagnosticEngine& diagnostics_;
     std::size_t initial_error_count_;
     std::ostringstream output_;
-    std::vector<FunctionEntry> functions_;
-    std::unordered_set<std::size_t> top_level_function_ids_;
+    std::unordered_map<std::size_t, const LoweredFunction*> functions_;
     std::optional<SymbolId> main_symbol_;
-    const FunctionEntry* current_function_{nullptr};
-    std::unordered_set<std::size_t> current_parameter_ids_;
+    const LoweredFunction* current_function_{nullptr};
+    std::unordered_map<std::size_t, TypeId> current_parameter_types_;
     std::unordered_map<std::size_t, TypeId> current_variable_types_;
+    std::unordered_map<std::size_t, const LoweredTemporary*>
+        current_temporaries_;
+    std::unordered_set<std::size_t> seen_symbol_ids_;
+    std::unordered_set<std::size_t> seen_temp_ids_;
+    std::size_t next_expected_temp_id_{0};
     std::size_t indentation_level_{0};
     std::size_t loop_depth_{0};
     bool uses_vector_{false};
@@ -2526,15 +2298,15 @@ private:
 }
 
 std::optional<std::string> generate_cpp(
-    const Program& program,
-    const CppGenerationContext& context,
+    const LoweredProgram& program,
+    const TypeContext& types,
     DiagnosticEngine& diagnostics)
 {
     if (diagnostics.has_errors()) {
         return std::nullopt;
     }
 
-    return CppGenerator{context, diagnostics}.generate(program);
+    return CppGenerator{types, diagnostics}.generate(program);
 }
-    
+
 }

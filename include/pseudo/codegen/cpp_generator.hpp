@@ -5,25 +5,15 @@
 
 namespace tpp {
 
-class DeclarationInfo;
 class DiagnosticEngine;
-class ResolutionInfo;
-class SymbolTable;
 class TypeContext;
-class TypeInfo;
-struct Program;
+struct LoweredProgram;
 
-struct CppGenerationContext {
-    const TypeContext& types;
-    const SymbolTable& symbols;
-    const DeclarationInfo& declarations;
-    const ResolutionInfo& resolutions;
-    const TypeInfo& type_info;
-};
-
+// `types` must be the TypeContext that supplied the TypeIds stored in
+// `program` during lowering.
 [[nodiscard]] std::optional<std::string> generate_cpp(
-    const Program& program,
-    const CppGenerationContext& context,
+    const LoweredProgram& program,
+    const TypeContext& types,
     DiagnosticEngine& diagnostics);
 
 }

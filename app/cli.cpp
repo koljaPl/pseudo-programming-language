@@ -6,6 +6,7 @@
 #include "pseudo/diagnostics/diagnostic_engine.hpp"
 #include "pseudo/driver/compilation_session.hpp"
 #include "pseudo/driver/compiler.hpp"
+#include "pseudo/lowering/lowerer.hpp"
 
 #include <optional>
 #include <string>
@@ -130,9 +131,9 @@ int run(
     std::optional<std::string> generated_cpp;
 
     if (succeeded && options.output_mode == OutputMode::cpp) {
-        generated_cpp = generate_cpp(
+        auto lowered_program = lower_program(
             session.program().value(),
-            CppGenerationContext{
+            LoweringContext{
                 .types = session.types(),
                 .symbols = session.symbols(),
                 .declarations = session.declarations(),
@@ -140,8 +141,14 @@ int run(
                 .type_info = session.type_info(),
             },
             session.diagnostics());
-        succeeded = generated_cpp.has_value()
-            && !session.diagnostics().has_errors();
+        if (lowered_program.has_value()) {
+            generated_cpp = generate_cpp(
+                *lowered_program,
+                session.types(),
+                session.diagnostics());
+        }
+        succeeded = lowered_program.has_value()
+            && generated_cpp.has_value() && !session.diagnostics().has_errors();
     }
 
     render_diagnostics(
