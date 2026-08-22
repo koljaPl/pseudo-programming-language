@@ -4,6 +4,7 @@
 #include "pseudo/codegen/cpp_generator.hpp"
 #include "pseudo/diagnostics/diagnostic_engine.hpp"
 #include "pseudo/lexer/lexer.hpp"
+#include "pseudo/lowering/lowerer.hpp"
 #include "pseudo/parser/parser.hpp"
 #include "pseudo/semantic/control_flow_checker.hpp"
 #include "pseudo/semantic/declaration_collector.hpp"
@@ -77,9 +78,9 @@ public:
         TPP_CHECK(!semantic_diagnostics_.has_errors());
     }
 
-    [[nodiscard]] tpp::CppGenerationContext context() const noexcept
+    [[nodiscard]] tpp::LoweringContext context() const noexcept
     {
-        return tpp::CppGenerationContext{
+        return tpp::LoweringContext{
             .types = types_,
             .symbols = symbols_,
             .declarations = declarations_,
@@ -213,7 +214,28 @@ std::optional<std::string> generate(
     tpp::DiagnosticEngine& diagnostics)
 {
     const auto context = checked.context();
-    return tpp::generate_cpp(checked.program(), context, diagnostics);
+    auto lowered = tpp::lower_program(
+        checked.program(),
+        context,
+        diagnostics);
+    if (!lowered.has_value()) {
+        return std::nullopt;
+    }
+
+    return tpp::generate_cpp(*lowered, checked.types(), diagnostics);
+}
+
+std::optional<std::string> lower_and_generate(
+    const tpp::Program& program,
+    const tpp::LoweringContext& context,
+    tpp::DiagnosticEngine& diagnostics)
+{
+    auto lowered = tpp::lower_program(program, context, diagnostics);
+    if (!lowered.has_value()) {
+        return std::nullopt;
+    }
+
+    return tpp::generate_cpp(*lowered, context.types, diagnostics);
 }
 
 std::string generate_source(const std::string_view source)
@@ -260,6 +282,43 @@ std::size_t count_occurrences(
         position += needle.size();
     }
     return count;
+}
+
+template <typename Node>
+tpp::LoweredExpressionPtr make_lowered_expression(
+    const tpp::SourceSpan span,
+    const tpp::TypeId type,
+    Node node)
+{
+    return std::make_unique<tpp::LoweredExpression>(tpp::LoweredExpression{
+        .span = span,
+        .type = type,
+        .node = std::move(node),
+    });
+}
+
+tpp::LoweredProgram make_lowered_main(
+    const tpp::SourceSpan span,
+    const tpp::TypeId integer_type,
+    tpp::LoweredStatement statement)
+{
+    auto body = std::make_unique<tpp::LoweredBlock>(tpp::LoweredBlock{
+        .span = span,
+        .statements = {},
+    });
+    body->statements.push_back(std::move(statement));
+
+    tpp::LoweredProgram program{span};
+    program.functions.push_back(tpp::LoweredFunction{
+        .span = span,
+        .name_span = span,
+        .symbol = tpp::SymbolId{0},
+        .return_type = integer_type,
+        .parameters = {},
+        .body = std::move(body),
+        .is_main = true,
+    });
+    return program;
 }
 
 void empty_main_has_stable_output()
@@ -1218,7 +1277,7 @@ void malformed_read_int_state_has_no_partial_output()
 }
 )"};
         const tpp::ResolutionInfo empty_resolutions;
-        const auto context = tpp::CppGenerationContext{
+        const auto context = tpp::LoweringContext{
             .types = checked.types(),
             .symbols = checked.symbols(),
             .declarations = checked.declarations(),
@@ -1227,7 +1286,7 @@ void malformed_read_int_state_has_no_partial_output()
         };
         tpp::DiagnosticEngine diagnostics;
 
-        TPP_CHECK(!tpp::generate_cpp(
+        TPP_CHECK(!lower_and_generate(
             checked.program(),
             context,
             diagnostics).has_value());
@@ -1631,7 +1690,7 @@ void malformed_and_unsupported_loops_have_no_partial_output()
         const CheckedProgram checked{
             "int main() { for value in \"x\" { print(value); } return 0; }"};
         const tpp::TypeInfo empty_types;
-        const auto context = tpp::CppGenerationContext{
+        const auto context = tpp::LoweringContext{
             .types = checked.types(),
             .symbols = checked.symbols(),
             .declarations = checked.declarations(),
@@ -1640,7 +1699,7 @@ void malformed_and_unsupported_loops_have_no_partial_output()
         };
         tpp::DiagnosticEngine diagnostics;
 
-        TPP_CHECK(!tpp::generate_cpp(
+        TPP_CHECK(!lower_and_generate(
             checked.program(),
             context,
             diagnostics).has_value());
@@ -1739,7 +1798,7 @@ void duplicate_main_is_rejected_before_emission()
 
     const tpp::ResolutionInfo resolutions;
     const tpp::TypeInfo type_info;
-    const auto context = tpp::CppGenerationContext{
+    const auto context = tpp::LoweringContext{
         .types = types,
         .symbols = symbols,
         .declarations = declarations,
@@ -1748,7 +1807,7 @@ void duplicate_main_is_rejected_before_emission()
     };
     tpp::DiagnosticEngine diagnostics;
 
-    const auto generated = tpp::generate_cpp(
+    const auto generated = lower_and_generate(
         program,
         context,
         diagnostics);
@@ -1988,7 +2047,7 @@ void malformed_semantic_context_is_diagnosed()
 
     {
         const tpp::ResolutionInfo empty_resolutions;
-        const auto context = tpp::CppGenerationContext{
+        const auto context = tpp::LoweringContext{
             .types = checked.types(),
             .symbols = checked.symbols(),
             .declarations = checked.declarations(),
@@ -1997,7 +2056,7 @@ void malformed_semantic_context_is_diagnosed()
         };
         tpp::DiagnosticEngine diagnostics;
 
-        TPP_CHECK(!tpp::generate_cpp(
+        TPP_CHECK(!lower_and_generate(
             checked.program(),
             context,
             diagnostics).has_value());
@@ -2006,7 +2065,7 @@ void malformed_semantic_context_is_diagnosed()
 
     {
         const tpp::TypeInfo empty_types;
-        const auto context = tpp::CppGenerationContext{
+        const auto context = tpp::LoweringContext{
             .types = checked.types(),
             .symbols = checked.symbols(),
             .declarations = checked.declarations(),
@@ -2015,7 +2074,7 @@ void malformed_semantic_context_is_diagnosed()
         };
         tpp::DiagnosticEngine diagnostics;
 
-        TPP_CHECK(!tpp::generate_cpp(
+        TPP_CHECK(!lower_and_generate(
             checked.program(),
             context,
             diagnostics).has_value());
@@ -2076,7 +2135,7 @@ void string_semantic_identity_is_required()
         const CheckedProgram checked{
             "int main() { print(len(\"x\")); return 0; }"};
         const tpp::ResolutionInfo empty_resolutions;
-        const auto context = tpp::CppGenerationContext{
+        const auto context = tpp::LoweringContext{
             .types = checked.types(),
             .symbols = checked.symbols(),
             .declarations = checked.declarations(),
@@ -2085,7 +2144,7 @@ void string_semantic_identity_is_required()
         };
         tpp::DiagnosticEngine diagnostics;
 
-        TPP_CHECK(!tpp::generate_cpp(
+        TPP_CHECK(!lower_and_generate(
             checked.program(),
             context,
             diagnostics).has_value());
@@ -2097,7 +2156,7 @@ void string_semantic_identity_is_required()
             "char first(string text) { return text[0]; }"
             "int main() { return 0; }"};
         const tpp::TypeInfo empty_types;
-        const auto context = tpp::CppGenerationContext{
+        const auto context = tpp::LoweringContext{
             .types = checked.types(),
             .symbols = checked.symbols(),
             .declarations = checked.declarations(),
@@ -2106,7 +2165,7 @@ void string_semantic_identity_is_required()
         };
         tpp::DiagnosticEngine diagnostics;
 
-        TPP_CHECK(!tpp::generate_cpp(
+        TPP_CHECK(!lower_and_generate(
             checked.program(),
             context,
             diagnostics).has_value());
@@ -2141,6 +2200,96 @@ void string_semantic_identity_is_required()
         TPP_CHECK(!generate(checked, diagnostics).has_value());
         check_has_diagnostic(diagnostics, "has no semantic identity");
     }
+}
+
+void malformed_grouping_cannot_bypass_integer_validation()
+{
+    constexpr auto span = tpp::SourceSpan{tpp::SourceId{0}, 0, 1};
+    tpp::TypeContext types;
+
+    auto integer = make_lowered_expression(
+        span,
+        types.string_type(),
+        tpp::LoweredIntegerLiteralExpression{
+            .lexeme = "9223372036854775808",
+        });
+    auto grouped = make_lowered_expression(
+        span,
+        types.integer_type(),
+        tpp::LoweredGroupedExpression{
+            .expression = std::move(integer),
+        });
+    auto unary = make_lowered_expression(
+        span,
+        types.integer_type(),
+        tpp::LoweredUnaryExpression{
+            .operator_kind = tpp::LoweredUnaryOperator::minus,
+            .operand = std::move(grouped),
+        });
+    auto program = make_lowered_main(
+        span,
+        types.integer_type(),
+        tpp::LoweredStatement{
+            .span = span,
+            .node = tpp::LoweredReturnStatement{
+                .value = std::move(unary),
+            },
+        });
+    tpp::DiagnosticEngine diagnostics;
+
+    const auto generated = tpp::generate_cpp(
+        program,
+        types,
+        diagnostics);
+
+    TPP_CHECK(!generated.has_value());
+    TPP_CHECK(diagnostics.has_errors());
+    check_has_diagnostic(diagnostics, "grouped expression type");
+}
+
+void malformed_grouping_cannot_bypass_print_validation()
+{
+    constexpr auto span = tpp::SourceSpan{tpp::SourceId{0}, 0, 1};
+    tpp::TypeContext types;
+
+    std::vector<tpp::LoweredExpressionPtr> arguments;
+    arguments.push_back(make_lowered_expression(
+        span,
+        types.integer_type(),
+        tpp::LoweredIntegerLiteralExpression{.lexeme = "1"}));
+    auto print = make_lowered_expression(
+        span,
+        types.integer_type(),
+        tpp::LoweredBuiltinCallExpression{
+            .builtin = tpp::BuiltinFunctionKind::print,
+            .callee_span = span,
+            .arguments = std::move(arguments),
+        });
+    auto grouped = make_lowered_expression(
+        span,
+        types.void_type(),
+        tpp::LoweredGroupedExpression{
+            .expression = std::move(print),
+        });
+    auto program = make_lowered_main(
+        span,
+        types.integer_type(),
+        tpp::LoweredStatement{
+            .span = span,
+            .node = tpp::LoweredExpressionStatement{
+                .expression = std::move(grouped),
+            },
+        });
+    tpp::DiagnosticEngine diagnostics;
+
+    const auto generated = tpp::generate_cpp(
+        program,
+        types,
+        diagnostics);
+
+    TPP_CHECK(!generated.has_value());
+    TPP_CHECK(diagnostics.has_errors());
+    check_has_diagnostic(diagnostics, "grouped expression type");
 }
 
 }
@@ -2219,5 +2368,9 @@ int main()
          malformed_semantic_context_is_diagnosed},
         {"string semantic identity",
          string_semantic_identity_is_required},
+        {"malformed grouping cannot bypass integer validation",
+         malformed_grouping_cannot_bypass_integer_validation},
+        {"malformed grouping cannot bypass print validation",
+         malformed_grouping_cannot_bypass_print_validation},
     });
 }

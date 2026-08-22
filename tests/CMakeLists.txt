@@ -50,6 +50,11 @@ tpp_add_test(
 )
 
 tpp_add_test(
+    lowerer_tests
+    lowerer_tests.cpp
+)
+
+tpp_add_test(
     runtime_tests
     runtime_tests.cpp
 )
