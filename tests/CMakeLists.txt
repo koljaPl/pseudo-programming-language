@@ -14,6 +14,15 @@ function(tpp_add_test target)
     add_test(NAME ${target} COMMAND ${target})
 endfunction()
 
+add_executable(
+    process_test_helper
+    process_test_helper.cpp
+)
+
+target_compile_features(process_test_helper PRIVATE cxx_std_20)
+set_target_properties(process_test_helper PROPERTIES CXX_EXTENSIONS OFF)
+tpp_enable_warnings(process_test_helper)
+
 tpp_add_test(
     source_manager_tests
     source_manager_tests.cpp
@@ -52,6 +61,23 @@ tpp_add_test(
 tpp_add_test(
     lowerer_tests
     lowerer_tests.cpp
+)
+
+tpp_add_test(
+    gpp_compiler_tests
+    gpp_compiler_tests.cpp
+)
+
+find_package(Threads REQUIRED)
+
+add_dependencies(gpp_compiler_tests process_test_helper)
+target_link_libraries(gpp_compiler_tests PRIVATE Threads::Threads)
+
+target_compile_definitions(
+    gpp_compiler_tests
+    PRIVATE
+        TPP_PROCESS_TEST_HELPER="$<TARGET_FILE:process_test_helper>"
+        TPP_RUNTIME_INCLUDE_DIR="${PROJECT_SOURCE_DIR}/runtime/include"
 )
 
 tpp_add_test(
@@ -587,6 +613,17 @@ tpp_add_cli_integration_test(
 find_program(TPP_GXX_EXECUTABLE NAMES g++)
 
 if(TPP_GXX_EXECUTABLE)
+    if(UNIX)
+        add_test(
+            NAME gpp_compiler.actual_gxx
+            COMMAND
+                "$<TARGET_FILE:gpp_compiler_tests>"
+                --actual-gxx
+                "${TPP_GXX_EXECUTABLE}"
+                "${PROJECT_SOURCE_DIR}/runtime/include"
+        )
+    endif()
+
     add_test(
         NAME codegen.smoke.gxx
         COMMAND
