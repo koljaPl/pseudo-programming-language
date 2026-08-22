@@ -517,6 +517,71 @@ void unknown_source_characters_report_exact_errors_and_make_progress()
     }
 }
 
+void independent_lexical_errors_preserve_tokens_and_source_order()
+{
+    const LexingResult result{
+        R"pseudo(@ good & "\q" okay 'ab' tail |)pseudo"};
+
+    check_spelled_tokens(
+        result,
+        {
+            {TokenKind::identifier, "good"},
+            {TokenKind::identifier, "okay"},
+            {TokenKind::identifier, "tail"},
+        });
+
+    const auto diagnostics = result.diagnostics.diagnostics();
+    TPP_CHECK_EQ(result.diagnostics.error_count(), std::size_t{5});
+    TPP_CHECK_EQ(diagnostics.size(), std::size_t{5});
+
+    const std::array expected_messages{
+        std::string_view{"unknown character '@'"},
+        std::string_view{"unexpected '&'; use '&&' for logical and"},
+        std::string_view{"unknown escape sequence '\\q'"},
+        std::string_view{"character literal must contain exactly one byte"},
+        std::string_view{"unexpected '|'; use '||' for logical or"},
+    };
+    const std::array expected_spans{
+        std::pair{std::size_t{0}, std::size_t{1}},
+        std::pair{std::size_t{7}, std::size_t{8}},
+        std::pair{std::size_t{10}, std::size_t{12}},
+        std::pair{std::size_t{19}, std::size_t{23}},
+        std::pair{std::size_t{29}, std::size_t{30}},
+    };
+
+    for (std::size_t index = 0; index < diagnostics.size(); ++index) {
+        TPP_CHECK_EQ(diagnostics[index].message, expected_messages[index]);
+        TPP_CHECK(diagnostics[index].primary_span.has_value());
+        const auto span = *diagnostics[index].primary_span;
+        TPP_CHECK(span.source == result.source);
+        TPP_CHECK_EQ(span.begin, expected_spans[index].first);
+        TPP_CHECK_EQ(span.end, expected_spans[index].second);
+    }
+}
+
+void lexer_instances_can_be_reused_deterministically()
+{
+    SourceManager sources;
+    DiagnosticEngine diagnostics;
+    const auto source = sources.add_source(
+        "reuse.tpp",
+        R"pseudo(name "value" '\n')pseudo");
+    Lexer lexer{source, sources, diagnostics};
+
+    const auto first = lexer.lex();
+    const auto second = lexer.lex();
+
+    TPP_CHECK(!diagnostics.has_errors());
+    TPP_CHECK_EQ(first.size(), second.size());
+    for (std::size_t index = 0; index < first.size(); ++index) {
+        TPP_CHECK_EQ(first[index].kind, second[index].kind);
+        TPP_CHECK(first[index].span.source == second[index].span.source);
+        TPP_CHECK_EQ(first[index].span.begin, second[index].span.begin);
+        TPP_CHECK_EQ(first[index].span.end, second[index].span.end);
+        TPP_CHECK(first[index].value == second[index].value);
+    }
+}
+
 void solitary_ampersand_and_pipe_have_actionable_diagnostics()
 {
     const LexingResult result{"& | && ||"};
@@ -778,6 +843,10 @@ int main()
          raw_nul_is_a_valid_one_byte_character_literal},
         {"unknown source characters report exact errors and make progress",
          unknown_source_characters_report_exact_errors_and_make_progress},
+        {"independent lexical errors preserve tokens and order",
+         independent_lexical_errors_preserve_tokens_and_source_order},
+        {"lexer reuse is deterministic",
+         lexer_instances_can_be_reused_deterministically},
         {"solitary ampersand and pipe have actionable diagnostics",
          solitary_ampersand_and_pipe_have_actionable_diagnostics},
         {"unknown escapes discard literals and recover after closing quote",

@@ -797,6 +797,132 @@ void stray_tokens_make_progress_and_preserve_following_declarations()
         std::string{"good"});
 }
 
+void else_recovery_is_contextual_and_does_not_escape_the_current_block()
+{
+    const ParsingResult stray{
+        "void f(){else { print(1); } print(2);}"};
+    const auto& stray_diagnostic = require_single_error(stray);
+    TPP_CHECK_EQ(
+        stray_diagnostic.message,
+        std::string{"unexpected 'else' without matching 'if'"});
+    TPP_CHECK(stray_diagnostic.primary_span.has_value());
+    check_span(*stray_diagnostic.primary_span, stray.source, 9, 13);
+
+    const auto& stray_body =
+        *require_function(stray.program.declarations.front()).body;
+    TPP_CHECK_EQ(stray_body.items.size(), std::size_t{2});
+    const auto& recovered_block =
+        require_statement_node<BlockStatement>(stray_body.items[0]);
+    TPP_CHECK(recovered_block.block != nullptr);
+    TPP_CHECK_EQ(recovered_block.block->items.size(), std::size_t{1});
+    require_statement_node<ExpressionStatement>(stray_body.items[1]);
+
+    const ParsingResult stray_before_expression{
+        "void f(){else print(1); print(2);}"};
+    const auto& expression_diagnostic =
+        require_single_error(stray_before_expression);
+    TPP_CHECK_EQ(
+        expression_diagnostic.message,
+        std::string{"unexpected 'else' without matching 'if'"});
+    const auto& expression_body = *require_function(
+        stray_before_expression.program.declarations.front()).body;
+    TPP_CHECK_EQ(expression_body.items.size(), std::size_t{2});
+    require_statement_node<ExpressionStatement>(expression_body.items[0]);
+    require_statement_node<ExpressionStatement>(expression_body.items[1]);
+
+    const ParsingResult missing_then_brace{
+        "void f(){if true { print(1); else { print(2); } print(3);}"};
+    const auto& brace_diagnostic = require_single_error(missing_then_brace);
+    TPP_CHECK_EQ(
+        brace_diagnostic.message,
+        std::string{"expected '}' to close block"});
+
+    const auto& recovered_if_body =
+        *require_function(missing_then_brace.program.declarations.front()).body;
+    TPP_CHECK_EQ(recovered_if_body.items.size(), std::size_t{2});
+    const auto& recovered_if =
+        require_statement_node<IfStatement>(recovered_if_body.items[0]);
+    TPP_CHECK(recovered_if.then_block != nullptr);
+    TPP_CHECK(recovered_if.else_block != nullptr);
+    require_statement_node<ExpressionStatement>(recovered_if_body.items[1]);
+}
+
+void else_without_a_block_does_not_create_a_recovered_if_node()
+{
+    const ParsingResult result{
+        "void f(){if true {} else return; print(1);}"};
+    const auto& diagnostic = require_single_error(result);
+    TPP_CHECK_EQ(
+        diagnostic.message,
+        std::string{"expected block after 'else'"});
+
+    const auto& body =
+        *require_function(result.program.declarations.front()).body;
+    TPP_CHECK_EQ(body.items.size(), std::size_t{2});
+    require_statement_node<ReturnStatement>(body.items[0]);
+    require_statement_node<ExpressionStatement>(body.items[1]);
+}
+
+void statement_terminator_recovery_suppresses_delimiter_cascades()
+{
+    struct Case {
+        std::string_view source;
+        std::string_view delimiter;
+        std::size_t delimiter_offset;
+    };
+
+    constexpr std::array cases{
+        Case{"void f(){print(1)); print(2);}", "))", 1},
+        Case{"void f(){values[0]]; good();}", "]]", 1},
+        Case{"void f(){print(1),; good();}", ",;", 0},
+    };
+
+    for (const auto& test_case : cases) {
+        const ParsingResult result{std::string{test_case.source}};
+        const auto& diagnostic = require_single_error(result);
+        TPP_CHECK_EQ(
+            diagnostic.message,
+            std::string{"expected ';' after expression"});
+        TPP_CHECK(diagnostic.primary_span.has_value());
+
+        const auto begin = test_case.source.find(test_case.delimiter)
+            + test_case.delimiter_offset;
+        check_span(*diagnostic.primary_span, result.source, begin, begin);
+
+        const auto& body =
+            *require_function(result.program.declarations.front()).body;
+        TPP_CHECK_EQ(body.items.size(), std::size_t{2});
+        require_statement_node<ExpressionStatement>(body.items[0]);
+        require_statement_node<ExpressionStatement>(body.items[1]);
+    }
+
+    const ParsingResult jump{"void f(){break ); continue;}"};
+    const auto& jump_diagnostic = require_single_error(jump);
+    TPP_CHECK_EQ(
+        jump_diagnostic.message,
+        std::string{"expected ';' after break statement"});
+    const auto& jump_body =
+        *require_function(jump.program.declarations.front()).body;
+    TPP_CHECK_EQ(jump_body.items.size(), std::size_t{2});
+    require_statement_node<BreakStatement>(jump_body.items[0]);
+    require_statement_node<ContinueStatement>(jump_body.items[1]);
+}
+
+void missing_semicolon_preserves_a_following_expression_statement()
+{
+    const ParsingResult result{"void f(){print(1) print(2);}"};
+    const auto& diagnostic = require_single_error(result);
+    TPP_CHECK_EQ(
+        diagnostic.message,
+        std::string{"expected ';' after expression"});
+
+    const auto& body =
+        *require_function(result.program.declarations.front()).body;
+    TPP_CHECK_EQ(body.items.size(), std::size_t{2});
+    require_statement_node<ExpressionStatement>(body.items[0]);
+    require_statement_node<ExpressionStatement>(body.items[1]);
+}
+
 void syntax_diagnostic_rendering_is_stable()
 {
     const ParsingResult result{"int value = ;"};
@@ -943,6 +1069,14 @@ int main()
          malformed_function_recovery_reaches_the_next_declaration},
         {"stray token progress guard",
          stray_tokens_make_progress_and_preserve_following_declarations},
+        {"contextual else recovery",
+         else_recovery_is_contextual_and_does_not_escape_the_current_block},
+        {"else without block recovery",
+         else_without_a_block_does_not_create_a_recovered_if_node},
+        {"statement delimiter cascade suppression",
+         statement_terminator_recovery_suppresses_delimiter_cascades},
+        {"missing semicolon preserves next expression",
+         missing_semicolon_preserves_a_following_expression_statement},
         {"stable syntax diagnostic",
          syntax_diagnostic_rendering_is_stable},
         {"owned program AST",
