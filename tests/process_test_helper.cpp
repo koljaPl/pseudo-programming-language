@@ -9,6 +9,8 @@
 #include <system_error>
 
 #if defined(__unix__) || defined(__APPLE__)
+#include <cerrno>
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -152,6 +154,26 @@ int run_timeout_tree(const std::filesystem::path& executable)
 
     wait_forever();
 }
+
+int check_closed_descriptor(const std::filesystem::path& executable)
+{
+    int descriptor = -1;
+    {
+        std::ifstream descriptor_file{
+            executable.string() + ".expected-closed-fd"};
+        if (!(descriptor_file >> descriptor) || descriptor < 3) {
+            std::cerr << "fake compiler could not read expected descriptor\n";
+            return 105;
+        }
+    }
+
+    errno = 0;
+    if (fcntl(descriptor, F_GETFD) != -1 || errno != EBADF) {
+        std::cerr << "fake compiler inherited caller descriptor\n";
+        return 106;
+    }
+    return 0;
+}
 #endif
 
 } // namespace
@@ -177,6 +199,13 @@ int main(const int argc, char* argv[])
 
     if (mode.find("fake-timeout-tree") != std::string::npos) {
         return run_timeout_tree(executable);
+    }
+
+    if (mode.find("fake-check-closed-fd") != std::string::npos) {
+        const int check_result = check_closed_descriptor(executable);
+        if (check_result != 0) {
+            return check_result;
+        }
     }
 #endif
 

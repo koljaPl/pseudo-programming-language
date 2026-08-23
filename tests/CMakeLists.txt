@@ -255,6 +255,13 @@ tpp_add_cli_integration_test(
 )
 
 set(empty_source "${CMAKE_CURRENT_SOURCE_DIR}/data/empty.tpp")
+string(
+    CONCAT
+    missing_entry_point_diagnostic
+    "${empty_source}:1:1: error: program requires exactly one top-level 'int main()' function\n"
+    "  1 | \n"
+    "    | ^\n"
+)
 
 tpp_add_cli_integration_test(
     multiple_inputs
@@ -265,15 +272,23 @@ tpp_add_cli_integration_test(
 
 tpp_add_cli_integration_test(
     empty_source
-    EXIT_CODE 0
+    EXIT_CODE 1
+    STDERR "${missing_entry_point_diagnostic}"
     ARGS "${empty_source}"
 )
 
 tpp_add_cli_integration_test(
     dump_empty_ast
-    EXIT_CODE 0
-    STDOUT "Program\n"
+    EXIT_CODE 1
+    STDERR "${missing_entry_point_diagnostic}"
     ARGS --dump-ast "${empty_source}"
+)
+
+tpp_add_cli_integration_test(
+    suppress_emit_on_missing_entry_point
+    EXIT_CODE 1
+    STDERR "${missing_entry_point_diagnostic}"
+    ARGS --emit-cpp "${empty_source}"
 )
 
 set(valid_lexical_source
@@ -730,7 +745,7 @@ set_tests_properties(
 find_program(TPP_GXX_EXECUTABLE NAMES g++)
 
 if(TPP_GXX_EXECUTABLE)
-    if(UNIX)
+    if(UNIX AND TPP_HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCLOSEFROM_NP)
         add_test(
             NAME gpp_compiler.actual_gxx
             COMMAND
@@ -896,6 +911,21 @@ if(TPP_GXX_EXECUTABLE)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCodegenExecution.cmake"
     )
 
+    add_test(
+        NAME codegen.execute.evaluation_order
+        COMMAND
+            "${CMAKE_COMMAND}"
+            "-DCLI=$<TARGET_FILE:pseudo>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_evaluation_order.tpp"
+            "-DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/codegen-evaluation-order.cpp"
+            "-DEXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/codegen-evaluation-order-exe"
+            "-DCXX=${TPP_GXX_EXECUTABLE}"
+            "-DRUNTIME_INCLUDE=${PROJECT_SOURCE_DIR}/runtime/include"
+            "-DSTDIN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_evaluation_order.stdin"
+            "-DEXPECTED_STDOUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_evaluation_order.expected.stdout"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCodegenExecution.cmake"
+    )
+
     set(gpp_integration_tests
         codegen.smoke.gxx
         codegen.execute.strings
@@ -908,8 +938,9 @@ if(TPP_GXX_EXECUTABLE)
         codegen.execute.nested_loops
         codegen.execute.foreach
         codegen.execute.combined
+        codegen.execute.evaluation_order
     )
-    if(UNIX)
+    if(UNIX AND TPP_HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCLOSEFROM_NP)
         list(APPEND gpp_integration_tests gpp_compiler.actual_gxx)
     endif()
     set_tests_properties(

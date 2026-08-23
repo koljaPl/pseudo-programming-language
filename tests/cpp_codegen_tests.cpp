@@ -396,7 +396,14 @@ void precedence_and_textual_operators_are_normalized()
         "int main()\n"
         "{\n"
         "    std::cout << std::boolalpha << "
-        "(std::int64_t{1} + (std::int64_t{2} * std::int64_t{3}))"
+        "([&]() -> std::int64_t { std::int64_t tpp_ordered_0 = "
+        "std::int64_t{1}; std::int64_t tpp_ordered_1 = ([&]() -> "
+        "std::int64_t { std::int64_t tpp_ordered_2 = std::int64_t{2}; "
+        "std::int64_t tpp_ordered_3 = std::int64_t{3}; return "
+        "(static_cast<std::int64_t&&>(tpp_ordered_2) * "
+        "static_cast<std::int64_t&&>(tpp_ordered_3)); }()); return "
+        "(static_cast<std::int64_t&&>(tpp_ordered_0) + "
+        "static_cast<std::int64_t&&>(tpp_ordered_1)); }())"
         " << '\\n';\n"
         "    std::cout << std::boolalpha << "
         "((!false) || (true && false)) << '\\n';\n"
@@ -428,17 +435,17 @@ void every_operator_has_a_stable_cpp_spelling()
         "(!false)",
         "(true || false)",
         "(true && false)",
-        "(std::int64_t{1} == std::int64_t{2})",
-        "(std::int64_t{1} != std::int64_t{2})",
-        "(std::int64_t{1} < std::int64_t{2})",
-        "(std::int64_t{1} <= std::int64_t{2})",
-        "(std::int64_t{1} > std::int64_t{2})",
-        "(std::int64_t{1} >= std::int64_t{2})",
-        "(std::int64_t{1} + std::int64_t{2})",
-        "(std::int64_t{1} - std::int64_t{2})",
-        "(std::int64_t{1} * std::int64_t{2})",
-        "(std::int64_t{1} / std::int64_t{2})",
-        "(std::int64_t{1} % std::int64_t{2})",
+        ") == static_cast<std::int64_t&&>(",
+        ") != static_cast<std::int64_t&&>(",
+        ") < static_cast<std::int64_t&&>(",
+        ") <= static_cast<std::int64_t&&>(",
+        ") > static_cast<std::int64_t&&>(",
+        ") >= static_cast<std::int64_t&&>(",
+        ") + static_cast<std::int64_t&&>(",
+        ") - static_cast<std::int64_t&&>(",
+        ") * static_cast<std::int64_t&&>(",
+        ") / static_cast<std::int64_t&&>(",
+        ") % static_cast<std::int64_t&&>(",
     };
 
     for (const auto expression : expected_expressions) {
@@ -453,8 +460,8 @@ void return_uses_the_main_abi_and_supports_signed_minimum()
         "int main() { return identity(1 + 2 * 3); }");
     tpp::test::check_contains(
         arithmetic,
-        "return static_cast<int>(tpp_function_0((std::int64_t{1} + "
-        "(std::int64_t{2} * std::int64_t{3}))));");
+        "return static_cast<int>(tpp_function_0(([&]() -> "
+        "std::int64_t");
 
     const auto minimum = generate_source(
         "int main() { return -(09223372036854775808); }");
@@ -554,7 +561,7 @@ void tpp_function_3(std::string tpp_parameter_4);
 
 std::int64_t tpp_function_0(std::int64_t tpp_parameter_1, std::int64_t tpp_parameter_2)
 {
-    return (tpp_parameter_1 + tpp_parameter_2);
+    return ([&]() -> std::int64_t { std::int64_t tpp_ordered_0 = tpp_parameter_1; std::int64_t tpp_ordered_1 = tpp_parameter_2; return (static_cast<std::int64_t&&>(tpp_ordered_0) + static_cast<std::int64_t&&>(tpp_ordered_1)); }());
 }
 
 void tpp_function_3(std::string tpp_parameter_4)
@@ -565,8 +572,8 @@ void tpp_function_3(std::string tpp_parameter_4)
 int main()
 {
     tpp_function_3(std::string{"sum", 3});
-    std::cout << std::boolalpha << tpp_function_0(std::int64_t{2}, std::int64_t{3}) << '\n';
-    return static_cast<int>(tpp_function_0(std::int64_t{0}, std::int64_t{0}));
+    std::cout << std::boolalpha << ([&]() -> std::int64_t { std::int64_t tpp_ordered_2 = std::int64_t{2}; std::int64_t tpp_ordered_3 = std::int64_t{3}; return tpp_function_0(static_cast<std::int64_t&&>(tpp_ordered_2), static_cast<std::int64_t&&>(tpp_ordered_3)); }()) << '\n';
+    return static_cast<int>(([&]() -> std::int64_t { std::int64_t tpp_ordered_4 = std::int64_t{0}; std::int64_t tpp_ordered_5 = std::int64_t{0}; return tpp_function_0(static_cast<std::int64_t&&>(tpp_ordered_4), static_cast<std::int64_t&&>(tpp_ordered_5)); }()));
 }
 )";
 
@@ -670,6 +677,7 @@ void calls_work_in_statements_returns_print_and_nested_arguments()
     constexpr std::string_view source = R"(int identity(int value) {
     return value;
 }
+
 void consume(int value) {
     identity(value);
     print(identity(value));
@@ -698,6 +706,45 @@ int main() {
     tpp::test::check_contains(
         output,
         "return static_cast<int>(tpp_function_0(std::int64_t{0}));");
+}
+
+void ordered_expressions_use_deterministic_temporaries()
+{
+    constexpr std::string_view source = R"(int combine(int first, int second) {
+    return first - second;
+}
+
+bool mark(bool value) {
+    return value;
+}
+
+int main() {
+    vector<int> values = vector<int>(read_int(), read_int());
+    values[read_int()] = read_int();
+    print(combine(read_int(), read_int()));
+    print(substring(read_string(), read_int(), read_int()));
+    print(mark(false) && mark(true));
+    return 0;
+}
+)";
+
+    const auto first = generate_source(source);
+    const auto second = generate_source(source);
+
+    TPP_CHECK_EQ(first, second);
+    tpp::test::check_contains(
+        first,
+        "([&]() -> std::vector<std::int64_t> { std::int64_t "
+        "tpp_ordered_");
+    tpp::test::check_contains(
+        first,
+        "([&]() -> void { auto&& tpp_ordered_");
+    tpp::test::check_contains(
+        first,
+        "([&]() -> std::string { std::string tpp_ordered_");
+    tpp::test::check_contains(
+        first,
+        "(tpp_function_3(false) && tpp_function_3(true))");
 }
 
 void parenthesized_parameters_and_callees_preserve_structure()
@@ -801,32 +848,33 @@ int main() {
     tpp::test::check_contains(output, "#include <pseudo/runtime.hpp>\n");
     tpp::test::check_contains(
         output,
-        "tpp::runtime::string_index(tpp_parameter_1, tpp_parameter_3) "
-        "= tpp_parameter_2;");
+        "auto&& tpp_ordered_");
+    tpp::test::check_contains(
+        output,
+        " = tpp::runtime::string_index(tpp_ordered_");
     tpp::test::check_contains(
         output,
         "tpp_parameter_1 += std::string{\"!\", 1};");
     tpp::test::check_contains(
         output,
-        "tpp::runtime::string_push(tpp_parameter_1, tpp_parameter_2);");
+        "return tpp::runtime::string_push(tpp_ordered_");
     tpp::test::check_contains(
         output,
-        "tpp::runtime::string_index(tpp_parameter_5, std::int64_t{0})");
+        "return tpp::runtime::string_index(tpp_ordered_");
     tpp::test::check_contains(
         output,
         "tpp::runtime::string_length(tpp_parameter_5)");
     tpp::test::check_contains(
         output,
-        "tpp::runtime::substring(tpp_parameter_5, std::int64_t{0}, "
-        "tpp::runtime::string_length(tpp_parameter_5))");
+        "return tpp::runtime::substring(");
     for (const auto spelling : {
-             " + std::string{\"x\", 1})",
-             " == std::string{\"x\", 1})",
-             " != std::string{\"x\", 1})",
-             " < std::string{\"x\", 1})",
-             " <= std::string{\"x\", 1})",
-             " > std::string{\"x\", 1})",
-             " >= std::string{\"x\", 1})",
+             ") + static_cast<std::string&&>(",
+             ") == static_cast<std::string&&>(",
+             ") != static_cast<std::string&&>(",
+             ") < static_cast<std::string&&>(",
+             ") <= static_cast<std::string&&>(",
+             ") > static_cast<std::string&&>(",
+             ") >= static_cast<std::string&&>(",
          }) {
         tpp::test::check_contains(output, spelling);
     }
@@ -857,11 +905,11 @@ int main() {
     tpp::test::check_contains(output, "tpp_variable_2 = 'y';");
     tpp::test::check_contains(
         output,
-        "tpp_variable_1 = (tpp_variable_1 + std::string{\"!\", 1});");
+        "tpp_variable_1 = ([&]() -> std::string");
     tpp::test::check_contains(
         output,
-        "tpp::runtime::string_index(tpp_variable_1, std::int64_t{0}) "
-        "= tpp_variable_2;");
+        " = tpp::runtime::string_index(tpp_ordered_");
+    tpp::test::check_contains(output, " = tpp_variable_2; }());");
     tpp::test::check_contains(output, "return tpp_variable_1;");
 }
 
@@ -882,16 +930,13 @@ int main() {
     const auto output = generate_source(source);
     tpp::test::check_contains(
         output,
-        "tpp::runtime::string_index(std::string{\"abc\", 3}, "
-        "std::int64_t{1})");
+        "([&]() -> char { const std::string& tpp_ordered_");
     tpp::test::check_contains(
         output,
-        "tpp::runtime::string_index(tpp_function_0("
-        "std::string{\"xyz\", 3}), std::int64_t{2})");
+        " = tpp_function_0(std::string{\"xyz\", 3});");
     tpp::test::check_contains(
         output,
-        "tpp::runtime::string_length(((std::string{\"a\", 1} + "
-        "std::string{\"b\", 1})))");
+        "tpp::runtime::string_length((([&]() -> std::string");
     tpp::test::check_contains(
         output,
         "tpp::runtime::string_length(tpp_function_0("
@@ -949,16 +994,13 @@ int main() {
         "tpp::runtime::make_vector<bool>(std::int64_t{2})");
     tpp::test::check_contains(
         output,
-        "tpp::runtime::make_vector<char>(std::int64_t{2}, 'x')");
+        "return tpp::runtime::make_vector<char>(");
     tpp::test::check_contains(
         output,
-        "tpp::runtime::make_vector<std::string>(std::int64_t{1}, "
-        "std::string{\"item\", 4})");
+        "return tpp::runtime::make_vector<std::string>(");
     tpp::test::check_contains(
         output,
-        "tpp::runtime::make_vector<std::vector<std::string>>("
-        "std::int64_t{2}, tpp::runtime::make_vector<std::string>("
-        "std::int64_t{1}, std::string{\"nested\", 6}))");
+        "return tpp::runtime::make_vector<std::vector<std::string>>(");
 }
 
 void vector_indexing_and_assignments_use_checked_runtime()
@@ -988,28 +1030,23 @@ int main() {
 )";
 
     const auto output = generate_source(source);
+    tpp::test::check_contains(output, "tpp::runtime::vector_index(");
+    tpp::test::check_contains(output, "tpp::runtime::string_index(");
     tpp::test::check_contains(
         output,
-        "tpp::runtime::vector_index(tpp::runtime::vector_index("
-        "tpp_parameter_1, std::int64_t{0}), std::int64_t{1}) "
-        "= std::int64_t{4};");
+        " = std::int64_t{4}; }());");
     tpp::test::check_contains(
         output,
-        "tpp::runtime::vector_index(tpp::runtime::vector_index("
-        "tpp_parameter_1, std::int64_t{1}), std::int64_t{1}) "
-        "+= std::int64_t{2};");
+        " += std::int64_t{2}; }());");
     tpp::test::check_contains(
         output,
-        "tpp::runtime::vector_index(tpp_parameter_2, std::int64_t{0}) "
-        "= true;");
+        " = true; }());");
     tpp::test::check_contains(
         output,
-        "tpp::runtime::vector_index(tpp_parameter_3, std::int64_t{0}) "
-        "= std::string{\"ok\", 2};");
+        " = std::string{\"ok\", 2}; }());");
     tpp::test::check_contains(
         output,
-        "tpp::runtime::string_index(tpp::runtime::vector_index("
-        "tpp_parameter_3, std::int64_t{1}), std::int64_t{0}) = 'X';");
+        " = 'X'; }());");
 }
 
 void malformed_vector_state_has_no_partial_output()
@@ -1540,10 +1577,10 @@ void foreach_bindings_are_mutable_copies()
 
     tpp::test::check_contains(
         output,
-        "tpp::runtime::string_push(tpp_variable_");
+        "return tpp::runtime::string_push(tpp_ordered_");
     tpp::test::check_contains(
         output,
-        "tpp::runtime::vector_index(tpp_variable_");
+        "tpp::runtime::vector_index(tpp_ordered_");
     TPP_CHECK(output.find("for (std::string&") == std::string::npos);
     TPP_CHECK(output.find("for (std::vector<std::int64_t>&")
         == std::string::npos);
@@ -1619,7 +1656,8 @@ int main() {
         std::size_t{2});
     TPP_CHECK_EQ(count_occurrences(output, "std::vector<std::int64_t> tpp_variable_"),
         std::size_t{3});
-    tpp::test::check_contains(output, "            tpp_function_0(");
+    tpp::test::check_contains(output, "            ([&]() -> void {");
+    tpp::test::check_contains(output, "return tpp_function_0(");
 }
 
 void malformed_and_unsupported_loops_have_no_partial_output()
@@ -2506,6 +2544,8 @@ int main()
          forward_calls_recursion_and_mutual_recursion_use_prototypes},
         {"calls in every supported context",
          calls_work_in_statements_returns_print_and_nested_arguments},
+        {"ordered expressions use deterministic temporaries",
+         ordered_expressions_use_deterministic_temporaries},
         {"parenthesized references and calls",
          parenthesized_parameters_and_callees_preserve_structure},
         {"safe generated names", generated_names_do_not_copy_cpp_keywords},

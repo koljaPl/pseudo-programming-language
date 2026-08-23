@@ -121,15 +121,30 @@ void multiple_input_files_are_rejected()
         std::string("pseudo: error: expected exactly one input file\n"));
 }
 
-void existing_empty_file_compiles_successfully()
+void missing_entry_point_suppresses_all_output_modes()
 {
     const auto input = std::filesystem::path(TPP_TEST_DATA_DIR) / "empty.tpp";
     const auto input_text = input.string();
-    const auto result = invoke({input_text});
+    const auto expected = input_text
+        + ":1:1: error: program requires exactly one top-level 'int main()' "
+          "function\n"
+          "  1 | \n"
+          "    | ^\n";
 
-    TPP_CHECK_EQ(result.exit_code, 0);
-    TPP_CHECK(result.stdout_text.empty());
-    TPP_CHECK(result.stderr_text.empty());
+    const auto normal = invoke({input_text});
+    TPP_CHECK_EQ(normal.exit_code, 1);
+    TPP_CHECK(normal.stdout_text.empty());
+    TPP_CHECK_EQ(normal.stderr_text, expected);
+
+    const auto dump = invoke({"--dump-ast", input_text});
+    TPP_CHECK_EQ(dump.exit_code, 1);
+    TPP_CHECK(dump.stdout_text.empty());
+    TPP_CHECK_EQ(dump.stderr_text, expected);
+
+    const auto emit = invoke({"--emit-cpp", input_text});
+    TPP_CHECK_EQ(emit.exit_code, 1);
+    TPP_CHECK(emit.stdout_text.empty());
+    TPP_CHECK_EQ(emit.stderr_text, expected);
 }
 
 void dump_ast_requires_an_input_file()
@@ -145,17 +160,25 @@ void dump_ast_requires_an_input_file()
 
 void dump_ast_accepts_the_flag_before_or_after_the_input()
 {
-    const auto input = std::filesystem::path(TPP_TEST_DATA_DIR) / "empty.tpp";
+    const auto input =
+        std::filesystem::path(TPP_TEST_DATA_DIR) / "valid_lexical.tpp";
     const auto input_text = input.string();
+    const auto expected = std::string{
+        "Program\n"
+        "  Function name=\"main\" return=int\n"
+        "    Parameters\n"
+        "    Block\n"
+        "      Return\n"
+        "        IntegerLiteral value=\"0\"\n"};
 
     const auto before = invoke({"--dump-ast", input_text});
     TPP_CHECK_EQ(before.exit_code, 0);
-    TPP_CHECK_EQ(before.stdout_text, std::string{"Program\n"});
+    TPP_CHECK_EQ(before.stdout_text, expected);
     TPP_CHECK(before.stderr_text.empty());
 
     const auto after = invoke({input_text, "--dump-ast"});
     TPP_CHECK_EQ(after.exit_code, 0);
-    TPP_CHECK_EQ(after.stdout_text, std::string{"Program\n"});
+    TPP_CHECK_EQ(after.stdout_text, expected);
     TPP_CHECK(after.stderr_text.empty());
 }
 
@@ -527,23 +550,6 @@ void emit_cpp_is_suppressed_for_codegen_errors()
               "    |              ^~~~\n");
 }
 
-void emit_cpp_rejects_a_frontend_valid_empty_program()
-{
-    const auto input =
-        std::filesystem::path(TPP_TEST_DATA_DIR) / "empty.tpp";
-    const auto result = invoke({"--emit-cpp", input.string()});
-
-    TPP_CHECK_EQ(result.exit_code, 1);
-    TPP_CHECK(result.stdout_text.empty());
-    TPP_CHECK_EQ(
-        result.stderr_text,
-        input.string()
-            + ":1:1: error: C++ code generation requires a top-level 'int "
-              "main()' function\n"
-              "  1 | \n"
-              "    | ^\n");
-}
-
 void missing_file_is_a_compilation_error()
 {
     const auto input = std::filesystem::path(TPP_TEST_DATA_DIR) / "missing.tpp";
@@ -567,8 +573,8 @@ int main()
         {"version is printed to stdout", version_is_printed_to_stdout},
         {"unknown option is a usage error", unknown_option_is_a_usage_error},
         {"multiple input files are rejected", multiple_input_files_are_rejected},
-        {"existing empty file compiles successfully",
-         existing_empty_file_compiles_successfully},
+        {"missing entry point suppresses all output modes",
+         missing_entry_point_suppresses_all_output_modes},
         {"dump AST requires input", dump_ast_requires_an_input_file},
         {"dump AST option order",
          dump_ast_accepts_the_flag_before_or_after_the_input},
@@ -604,8 +610,6 @@ int main()
          emit_cpp_is_suppressed_for_frontend_errors},
         {"emit C++ suppresses codegen errors",
          emit_cpp_is_suppressed_for_codegen_errors},
-        {"emit C++ rejects empty program",
-         emit_cpp_rejects_a_frontend_valid_empty_program},
         {"missing file is a compilation error", missing_file_is_a_compilation_error},
     });
 }

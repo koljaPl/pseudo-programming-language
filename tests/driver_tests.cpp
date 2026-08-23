@@ -63,6 +63,16 @@ void check_resolution(
     TPP_CHECK_EQ(*actual, expected);
 }
 
+void check_span(
+    const std::optional<tpp::SourceSpan>& actual,
+    const tpp::SourceSpan expected)
+{
+    TPP_CHECK(actual.has_value());
+    TPP_CHECK_EQ(actual->source, expected.source);
+    TPP_CHECK_EQ(actual->begin, expected.begin);
+    TPP_CHECK_EQ(actual->end, expected.end);
+}
+
 void check_valid_compilation_state(
     const tpp::CompilationSession& session)
 {
@@ -81,16 +91,16 @@ void check_valid_compilation_state(
     TPP_CHECK_EQ(session.types().type_count(), std::size_t{5});
 }
 
-void empty_source_produces_only_eof()
+void empty_source_is_rejected_after_declaration_collection()
 {
     tpp::CompilationSession session;
     const tpp::Compiler compiler;
 
     const bool succeeded = compiler.compile(data_path("empty.tpp"), session);
 
-    TPP_CHECK(succeeded);
-    TPP_CHECK(!session.diagnostics().has_errors());
-    TPP_CHECK(session.diagnostics().diagnostics().empty());
+    TPP_CHECK(!succeeded);
+    TPP_CHECK(session.diagnostics().has_errors());
+    TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
     TPP_CHECK_EQ(session.tokens().size(), std::size_t{1});
 
     const auto& eof = session.tokens().front();
@@ -101,7 +111,78 @@ void empty_source_produces_only_eof()
     TPP_CHECK(session.program().has_value());
     TPP_CHECK(session.program()->declarations.empty());
     TPP_CHECK(session.program()->span.empty());
+    const auto& diagnostic = session.diagnostics().diagnostics().front();
+    TPP_CHECK_EQ(
+        diagnostic.message,
+        std::string{
+            "program requires exactly one top-level 'int main()' function"});
+    check_span(diagnostic.primary_span, session.program()->span);
     check_fresh_semantic_state(session);
+}
+
+void entry_point_validation_rejects_missing_and_invalid_main()
+{
+    tpp::CompilationSession session;
+    const tpp::Compiler compiler;
+
+    const auto check_missing = [&](const std::string& filename) {
+        TPP_CHECK(!compiler.compile(data_path(filename), session));
+        TPP_CHECK(session.program().has_value());
+        TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
+        TPP_CHECK_EQ(
+            session.diagnostics().diagnostics().front().message,
+            std::string{
+                "program requires exactly one top-level 'int main()' function"});
+        check_span(
+            session.diagnostics().diagnostics().front().primary_span,
+            session.program()->span);
+        TPP_CHECK(!session.declarations().empty());
+        TPP_CHECK(session.resolutions().empty());
+        TPP_CHECK(session.type_info().empty());
+    };
+
+    check_missing("missing_main.tpp");
+    check_missing("nested_main_only.tpp");
+
+    const auto check_signature = [&](const std::string& filename) {
+        TPP_CHECK(!compiler.compile(data_path(filename), session));
+        TPP_CHECK(session.program().has_value());
+        TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
+        TPP_CHECK_EQ(
+            session.diagnostics().diagnostics().front().message,
+            std::string{
+                "'main' must have return type 'int' and no parameters"});
+        const auto* main_declaration = std::get_if<tpp::FunctionDeclaration>(
+            &session.program()->declarations.front());
+        TPP_CHECK(main_declaration != nullptr);
+        check_span(
+            session.diagnostics().diagnostics().front().primary_span,
+            main_declaration->name_span);
+        TPP_CHECK(!session.declarations().empty());
+        TPP_CHECK(session.resolutions().empty());
+        TPP_CHECK(session.type_info().empty());
+    };
+
+    check_signature("main_with_parameter.tpp");
+    check_signature("void_main.tpp");
+}
+
+void duplicate_main_remains_a_declaration_error()
+{
+    tpp::CompilationSession session;
+    const tpp::Compiler compiler;
+
+    TPP_CHECK(!compiler.compile(data_path("duplicate_main.tpp"), session));
+    TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
+    TPP_CHECK_EQ(session.diagnostics().diagnostics().size(), std::size_t{2});
+    TPP_CHECK_EQ(
+        session.diagnostics().diagnostics().front().message,
+        std::string{"duplicate declaration of 'main'"});
+    TPP_CHECK_EQ(
+        session.diagnostics().diagnostics()[1].message,
+        std::string{"previous declaration is here"});
+    TPP_CHECK(session.resolutions().empty());
+    TPP_CHECK(session.type_info().empty());
 }
 
 void valid_source_produces_tokens_without_diagnostics()
@@ -313,12 +394,13 @@ void compilation_session_can_be_reused_without_stale_results()
     TPP_CHECK(!session.type_info().empty());
     TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{1});
 
-    TPP_CHECK(compiler.compile(
+    TPP_CHECK(!compiler.compile(
         data_path("empty.tpp"),
         session));
     TPP_CHECK(session.program().has_value());
     TPP_CHECK(session.program()->declarations.empty());
-    TPP_CHECK(!session.diagnostics().has_errors());
+    TPP_CHECK(session.diagnostics().has_errors());
+    TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
     check_fresh_semantic_state(session);
 
     TPP_CHECK(compiler.compile(
@@ -923,7 +1005,12 @@ void unreachable_warnings_do_not_fail_compilation()
 int main()
 {
     return tpp::test::run({
-        {"empty source produces only EOF", empty_source_produces_only_eof},
+        {"empty source is rejected after declaration collection",
+         empty_source_is_rejected_after_declaration_collection},
+        {"entry point validation rejects missing and invalid main",
+         entry_point_validation_rejects_missing_and_invalid_main},
+        {"duplicate main remains a declaration error",
+         duplicate_main_remains_a_declaration_error},
         {"valid source produces tokens without diagnostics",
          valid_source_produces_tokens_without_diagnostics},
         {"lexical error fails but recovers to EOF",

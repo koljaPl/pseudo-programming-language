@@ -1,5 +1,6 @@
 #include "test_support.hpp"
 
+#include "pseudo/config.hpp"
 #include "pseudo/codegen/cpp_generator.hpp"
 #include "pseudo/driver/compilation_session.hpp"
 #include "pseudo/driver/compiler.hpp"
@@ -25,6 +26,7 @@
 #include <vector>
 
 #if defined(__unix__) || defined(__APPLE__)
+#include <fcntl.h>
 #include <sys/types.h>
 #include <unistd.h>
 #endif
@@ -46,13 +48,14 @@ static_assert(!std::is_copy_assignable_v<tpp::CompiledProgram>);
 static_assert(std::is_nothrow_move_constructible_v<tpp::CompiledProgram>);
 static_assert(std::is_nothrow_move_assignable_v<tpp::CompiledProgram>);
 
-#if !defined(__unix__) && !defined(__APPLE__)
+#if (!defined(__unix__) && !defined(__APPLE__)) \
+    || !TPP_HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCLOSEFROM_NP
 
 void unsupported_platform_is_reported_explicitly()
 {
-    const tpp::GppCompiler compiler{tpp::GppCompilerConfig{
-        .runtime_include_directory = ".",
-    }};
+    tpp::GppCompilerConfig config;
+    config.runtime_include_directory = ".";
+    const tpp::GppCompiler compiler{std::move(config)};
     const auto result = compiler.compile("int main() {}\n");
     TPP_CHECK_EQ(
         result.status,
@@ -63,6 +66,29 @@ void unsupported_platform_is_reported_explicitly()
 }
 
 #else
+
+class ScopedFileDescriptor {
+public:
+    explicit ScopedFileDescriptor(const int descriptor) noexcept
+        : descriptor_{descriptor}
+    {
+    }
+
+    ScopedFileDescriptor(const ScopedFileDescriptor&) = delete;
+    ScopedFileDescriptor& operator=(const ScopedFileDescriptor&) = delete;
+
+    ~ScopedFileDescriptor() noexcept
+    {
+        if (descriptor_ >= 0) {
+            static_cast<void>(close(descriptor_));
+        }
+    }
+
+    [[nodiscard]] int get() const noexcept { return descriptor_; }
+
+private:
+    int descriptor_;
+};
 
 class TemporaryDirectory {
 public:
@@ -398,6 +424,36 @@ void compiler_argv_and_null_stdin_match_the_contract()
     const tpp::GppCompiler compiler{std::move(config)};
     const auto result = compiler.compile("int main() {}\n");
 
+    TPP_CHECK(result.succeeded());
+}
+
+void compiler_does_not_inherit_caller_file_descriptors()
+{
+    FakeCompilerFixture fixture;
+    const auto marker_path = fixture.root() / "caller-owned-marker";
+    const ScopedFileDescriptor marker_descriptor{::open(
+        marker_path.c_str(), O_CREAT | O_RDWR | O_TRUNC, 0600)};
+    TPP_CHECK(marker_descriptor.get() >= 3);
+
+    const int original_flags = fcntl(marker_descriptor.get(), F_GETFD);
+    TPP_CHECK(original_flags >= 0);
+    const int inheritable_flags = original_flags & ~FD_CLOEXEC;
+    TPP_CHECK_EQ(
+        fcntl(
+            marker_descriptor.get(),
+            F_SETFD,
+            inheritable_flags),
+        0);
+
+    const auto helper = fixture.copy_helper("fake-check-closed-fd");
+    write_file(
+        helper.string() + ".expected-closed-fd",
+        std::to_string(marker_descriptor.get()));
+    const tpp::GppCompiler compiler{fixture.config_for(helper)};
+    const auto result = compiler.compile("int main() {}\n");
+
+    TPP_CHECK_EQ(
+        fcntl(marker_descriptor.get(), F_GETFD), inheritable_flags);
     TPP_CHECK(result.succeeded());
 }
 
@@ -881,7 +937,9 @@ int run_actual_mode(const int argc, char* argv[])
 
 int main(const int argc, char* argv[])
 {
-#if !defined(__unix__) && !defined(__APPLE__)
+#if (!defined(__unix__) && !defined(__APPLE__)) \
+    || !TPP_HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCLOSEFROM_NP
+    static_cast<void>(argv);
     if (argc != 1) {
         return 2;
     }
@@ -906,6 +964,8 @@ int main(const int argc, char* argv[])
         {"source is written as exact bytes", source_is_written_as_exact_bytes},
         {"compiler argv and null stdin match the contract",
          compiler_argv_and_null_stdin_match_the_contract},
+        {"compiler does not inherit caller file descriptors",
+         compiler_does_not_inherit_caller_file_descriptors},
         {"missing compiler is a launch failure",
          missing_compiler_is_a_launch_failure},
         {"bare compiler name is resolved through PATH",
