@@ -279,6 +279,11 @@ private:
         std::string generated_name;
     };
 
+    struct OrderedValue {
+        std::string type;
+        std::string name;
+    };
+
     [[nodiscard]] bool has_new_errors() const noexcept
     {
         return diagnostics_.error_count() != initial_error_count_;
@@ -357,6 +362,48 @@ private:
 
         report(span, "malformed lowered state: unknown primitive type");
         return std::nullopt;
+    }
+
+    [[nodiscard]] std::string next_ordered_value_name()
+    {
+        std::ostringstream name;
+        name.imbue(std::locale::classic());
+        name << "tpp_ordered_" << next_ordered_value_id_;
+        ++next_ordered_value_id_;
+        return name.str();
+    }
+
+    [[nodiscard]] std::optional<OrderedValue> emit_ordered_value(
+        const LoweredExpression& expression,
+        const std::string_view role)
+    {
+        const auto type = cpp_type(expression.type, expression.span, role);
+        if (!type.has_value()) {
+            return std::nullopt;
+        }
+        if (*type == "void") {
+            report(
+                expression.span,
+                "malformed lowered state: ordered value has type 'void'");
+            return std::nullopt;
+        }
+
+        OrderedValue value{
+            .type = *type,
+            .name = next_ordered_value_name(),
+        };
+        output_ << value.type << ' ' << value.name << " = ";
+        if (!emit_expression(expression)) {
+            return std::nullopt;
+        }
+        output_ << "; ";
+        return value;
+    }
+
+    void emit_ordered_value_use(const OrderedValue& value)
+    {
+        output_ << "static_cast<" << value.type << "&&>(" << value.name
+                << ')';
     }
 
     [[nodiscard]] bool is_vector_type(const TypeId type) const noexcept
@@ -932,48 +979,6 @@ private:
         return true;
     }
 
-    [[nodiscard]] bool emit_assignment_target(
-        const LoweredAssignmentTarget& target,
-        const StorageReference& storage,
-        const std::size_t depth)
-    {
-        if (depth == 0) {
-            output_ << storage.generated_name;
-            return true;
-        }
-
-        const auto container_type = target.container_types[depth - 1];
-        if (container_type == types_.string_type()) {
-            output_ << "tpp::runtime::string_index(";
-        } else {
-            const auto descriptor = types_.lookup(container_type);
-            if (!descriptor.has_value()
-                || !std::holds_alternative<SemanticVectorType>(*descriptor)) {
-                report(
-                    target.span,
-                    "malformed lowered state: assignment target has an "
-                    "invalid indexed container type");
-                return false;
-            }
-            uses_vector_ = true;
-            output_ << "tpp::runtime::vector_index(";
-        }
-        uses_runtime_ = true;
-
-        if (!emit_assignment_target(target, storage, depth - 1)) {
-            output_ << ')';
-            return false;
-        }
-        output_ << ", ";
-        const auto& index = target.indices[depth - 1];
-        if (index == nullptr || !emit_expression(*index)) {
-            output_ << ')';
-            return false;
-        }
-        output_ << ')';
-        return true;
-    }
-
     void emit_statement_node(
         const SourceSpan span,
         const LoweredAssignmentStatement& statement)
@@ -1047,19 +1052,65 @@ private:
         }
 
         emit_indentation();
-        if (!emit_assignment_target(
-                statement.target,
-                *storage,
-                statement.target.indices.size())) {
+        if (!indexed_target) {
+            output_ << storage->generated_name << ' ' << *spelling << ' ';
+            if (!emit_expression(*statement.value)) {
+                output_ << ";\n";
+                return;
+            }
             output_ << ";\n";
             return;
         }
-        output_ << ' ' << *spelling << ' ';
+
+        output_ << "([&]() -> void { auto&& ";
+        auto target_name = next_ordered_value_name();
+        output_ << target_name << " = " << storage->generated_name << "; ";
+        for (std::size_t depth = 0;
+             depth < statement.target.indices.size();
+             ++depth) {
+            const auto& index_expression = statement.target.indices[depth];
+            const auto index_value = emit_ordered_value(
+                *index_expression,
+                "assignment target index");
+            if (!index_value.has_value()) {
+                output_ << "}());\n";
+                return;
+            }
+
+            auto helper = std::string_view{};
+            const auto container_type = statement.target.container_types[depth];
+            if (container_type == types_.string_type()) {
+                helper = "tpp::runtime::string_index(";
+            } else {
+                const auto descriptor = types_.lookup(container_type);
+                if (!descriptor.has_value()
+                    || !std::holds_alternative<SemanticVectorType>(
+                        *descriptor)) {
+                    report(
+                        statement.target.span,
+                        "malformed lowered state: assignment target has an "
+                        "invalid indexed container type");
+                    output_ << "}());\n";
+                    return;
+                }
+                helper = "tpp::runtime::vector_index(";
+                uses_vector_ = true;
+            }
+            uses_runtime_ = true;
+
+            const auto element_name = next_ordered_value_name();
+            output_ << "auto&& " << element_name << " = " << helper
+                    << target_name << ", ";
+            emit_ordered_value_use(*index_value);
+            output_ << "); ";
+            target_name = element_name;
+        }
+        output_ << target_name << ' ' << *spelling << ' ';
         if (!emit_expression(*statement.value)) {
-            output_ << ";\n";
+            output_ << "; }());\n";
             return;
         }
-        output_ << ";\n";
+        output_ << "; }());\n";
     }
 
     void emit_statement_node(
@@ -1874,17 +1925,50 @@ private:
             return false;
         }
 
-        output_ << '(';
-        if (!emit_expression(*binary.left)) {
+        if (binary.operator_kind == LoweredBinaryOperator::logical_or
+            || binary.operator_kind == LoweredBinaryOperator::logical_and) {
+            output_ << '(';
+            if (!emit_expression(*binary.left)) {
+                output_ << ')';
+                return false;
+            }
+            output_ << ' ' << *spelling << ' ';
+            if (!emit_expression(*binary.right)) {
+                output_ << ')';
+                return false;
+            }
             output_ << ')';
+            return true;
+        }
+
+        const auto result_type = cpp_type(
+            expression.type,
+            expression.span,
+            "binary expression result");
+        if (!result_type.has_value() || *result_type == "void") {
             return false;
         }
+
+        output_ << "([&]() -> " << *result_type << " { ";
+        const auto left = emit_ordered_value(
+            *binary.left,
+            "binary left operand");
+        if (!left.has_value()) {
+            output_ << "}())";
+            return false;
+        }
+        const auto right = emit_ordered_value(
+            *binary.right,
+            "binary right operand");
+        if (!right.has_value()) {
+            output_ << "}())";
+            return false;
+        }
+        output_ << "return (";
+        emit_ordered_value_use(*left);
         output_ << ' ' << *spelling << ' ';
-        if (!emit_expression(*binary.right)) {
-            output_ << ')';
-            return false;
-        }
-        output_ << ')';
+        emit_ordered_value_use(*right);
+        output_ << "); }())";
         return true;
     }
 
@@ -1928,18 +2012,48 @@ private:
             }
         }
 
-        output_ << generated_name("tpp_function_", call.function) << '(';
-        auto valid = true;
+        if (call.arguments.size() < 2) {
+            output_ << generated_name("tpp_function_", call.function) << '(';
+            if (!call.arguments.empty()
+                && !emit_expression(*call.arguments.front())) {
+                output_ << ')';
+                return false;
+            }
+            output_ << ')';
+            return true;
+        }
+
+        const auto result_type = cpp_type(
+            expression.type,
+            expression.span,
+            "user call result");
+        if (!result_type.has_value()) {
+            return false;
+        }
+
+        output_ << "([&]() -> " << *result_type << " { ";
+        std::vector<OrderedValue> arguments;
+        arguments.reserve(call.arguments.size());
         for (std::size_t index = 0; index < call.arguments.size(); ++index) {
+            const auto argument = emit_ordered_value(
+                *call.arguments[index],
+                "user call argument");
+            if (!argument.has_value()) {
+                output_ << "}())";
+                return false;
+            }
+            arguments.push_back(*argument);
+        }
+        output_ << "return "
+                << generated_name("tpp_function_", call.function) << '(';
+        for (std::size_t index = 0; index < arguments.size(); ++index) {
             if (index != 0) {
                 output_ << ", ";
             }
-            if (!emit_expression(*call.arguments[index])) {
-                valid = false;
-            }
+            emit_ordered_value_use(arguments[index]);
         }
-        output_ << ')';
-        return valid;
+        output_ << "); }())";
+        return true;
     }
 
     [[nodiscard]] bool emit_expression_node(
@@ -2014,17 +2128,29 @@ private:
             output_ << ')';
             return true;
         case BuiltinFunctionKind::substring:
-            output_ << "tpp::runtime::substring(";
-            for (std::size_t index = 0; index < call.arguments.size(); ++index) {
-                if (index != 0) {
-                    output_ << ", ";
+            output_ << "([&]() -> std::string { ";
+            {
+                std::vector<OrderedValue> arguments;
+                arguments.reserve(call.arguments.size());
+                for (const auto& argument_expression : call.arguments) {
+                    const auto argument = emit_ordered_value(
+                        *argument_expression,
+                        "substring argument");
+                    if (!argument.has_value()) {
+                        output_ << "}())";
+                        return false;
+                    }
+                    arguments.push_back(*argument);
                 }
-                if (!emit_expression(*call.arguments[index])) {
-                    output_ << ')';
-                    return false;
+                output_ << "return tpp::runtime::substring(";
+                for (std::size_t index = 0; index < arguments.size(); ++index) {
+                    if (index != 0) {
+                        output_ << ", ";
+                    }
+                    emit_ordered_value_use(arguments[index]);
                 }
             }
-            output_ << ')';
+            output_ << "); }())";
             return true;
         case BuiltinFunctionKind::print:
             break;
@@ -2034,6 +2160,103 @@ private:
             call.callee_span,
             "malformed lowered state: unknown builtin function");
         return false;
+    }
+
+    [[nodiscard]] bool emit_mutable_expression(
+        const LoweredExpression& expression)
+    {
+        if (std::holds_alternative<LoweredStorageExpression>(expression.node)) {
+            return emit_expression(expression);
+        }
+
+        if (const auto* grouped =
+                std::get_if<LoweredGroupedExpression>(&expression.node)) {
+            if (grouped->expression == nullptr
+                || grouped->expression->type != expression.type) {
+                report(
+                    expression.span,
+                    "malformed lowered state: mutable grouped expression is "
+                    "invalid");
+                return false;
+            }
+            output_ << '(';
+            if (!emit_mutable_expression(*grouped->expression)) {
+                output_ << ')';
+                return false;
+            }
+            output_ << ')';
+            return true;
+        }
+
+        const auto* index =
+            std::get_if<LoweredIndexExpression>(&expression.node);
+        if (index == nullptr || index->base == nullptr
+            || index->index == nullptr) {
+            report(
+                expression.span,
+                "malformed lowered state: mutable expression is not an "
+                "assignable storage or index");
+            return false;
+        }
+        if (index->container_type != index->base->type
+            || index->index->type != types_.integer_type()) {
+            report(
+                expression.span,
+                "malformed lowered state: mutable index operand types do not "
+                "match its recorded container");
+            return false;
+        }
+
+        auto helper = std::string_view{};
+        auto expected_result = std::optional<TypeId>{};
+        if (index->container_type == types_.string_type()) {
+            helper = "tpp::runtime::string_index(";
+            expected_result = types_.character_type();
+        } else {
+            const auto descriptor = types_.lookup(index->container_type);
+            const auto* vector = descriptor.has_value()
+                ? std::get_if<SemanticVectorType>(&*descriptor)
+                : nullptr;
+            if (vector == nullptr) {
+                report(
+                    index->base->span,
+                    "malformed lowered state: mutable index base is not a "
+                    "string or vector");
+                return false;
+            }
+            helper = "tpp::runtime::vector_index(";
+            expected_result = vector->element_type;
+            uses_vector_ = true;
+        }
+        if (!expected_result.has_value()
+            || expression.type != *expected_result) {
+            report(
+                expression.span,
+                "malformed lowered state: mutable index result type does not "
+                "match its base type");
+            return false;
+        }
+
+        uses_runtime_ = true;
+        output_ << "([&]() -> decltype(auto) { auto&& ";
+        const auto base_name = next_ordered_value_name();
+        output_ << base_name << " = ";
+        if (!emit_mutable_expression(*index->base)) {
+            output_ << "; }())";
+            return false;
+        }
+        output_ << "; ";
+        const auto index_value = emit_ordered_value(
+            *index->index,
+            "mutable index operand");
+        if (!index_value.has_value()) {
+            output_ << "}())";
+            return false;
+        }
+        output_ << "return " << helper << base_name << ", ";
+        emit_ordered_value_use(*index_value);
+        output_ << "); }())";
+        return true;
     }
 
     [[nodiscard]] bool emit_expression_node(
@@ -2091,19 +2314,34 @@ private:
         }
 
         uses_runtime_ = true;
-        output_ << helper;
-        if (!emit_expression(*call.receiver)) {
-            output_ << ')';
-            return false;
-        }
-        if (call.member == MemberKind::string_push) {
-            output_ << ", ";
-            if (!emit_expression(*call.arguments.front())) {
+        if (call.member == MemberKind::string_length) {
+            output_ << helper;
+            if (!emit_expression(*call.receiver)) {
                 output_ << ')';
                 return false;
             }
+            output_ << ')';
+            return true;
         }
-        output_ << ')';
+
+        output_ << "([&]() -> void { std::string& ";
+        const auto receiver_name = next_ordered_value_name();
+        output_ << receiver_name << " = ";
+        if (!emit_mutable_expression(*call.receiver)) {
+            output_ << "; }())";
+            return false;
+        }
+        output_ << "; ";
+        const auto argument = emit_ordered_value(
+            *call.arguments.front(),
+            "string push argument");
+        if (!argument.has_value()) {
+            output_ << "}())";
+            return false;
+        }
+        output_ << "return " << helper << receiver_name << ", ";
+        emit_ordered_value_use(*argument);
+        output_ << "); }())";
         return true;
     }
 
@@ -2157,18 +2395,39 @@ private:
             return false;
         }
 
+        const auto container_type = cpp_type(
+            index.container_type,
+            index.base->span,
+            "index base");
+        const auto result_type = cpp_type(
+            expression.type,
+            expression.span,
+            "index result");
+        if (!container_type.has_value() || !result_type.has_value()
+            || *container_type == "void" || *result_type == "void") {
+            return false;
+        }
+
         uses_runtime_ = true;
-        output_ << helper;
+        output_ << "([&]() -> " << *result_type << " { const "
+                << *container_type << "& ";
+        const auto base_name = next_ordered_value_name();
+        output_ << base_name << " = ";
         if (!emit_expression(*index.base)) {
-            output_ << ')';
+            output_ << "; }())";
             return false;
         }
-        output_ << ", ";
-        if (!emit_expression(*index.index)) {
-            output_ << ')';
+        output_ << "; ";
+        const auto index_value = emit_ordered_value(
+            *index.index,
+            "index operand");
+        if (!index_value.has_value()) {
+            output_ << "}())";
             return false;
         }
-        output_ << ')';
+        output_ << "return " << helper << base_name << ", ";
+        emit_ordered_value_use(*index_value);
+        output_ << "); }())";
         return true;
     }
 
@@ -2231,20 +2490,39 @@ private:
             return false;
         }
         uses_runtime_ = true;
+        if (construction.arguments.size() == 2) {
+            output_ << "([&]() -> " << *vector_type << " { ";
+            std::vector<OrderedValue> arguments;
+            arguments.reserve(construction.arguments.size());
+            for (const auto& argument_expression : construction.arguments) {
+                const auto argument = emit_ordered_value(
+                    *argument_expression,
+                    "vector construction argument");
+                if (!argument.has_value()) {
+                    output_ << "}())";
+                    return false;
+                }
+                arguments.push_back(*argument);
+            }
+            output_ << "return tpp::runtime::make_vector<" << *element_type
+                    << ">(";
+            for (std::size_t index = 0; index < arguments.size(); ++index) {
+                if (index != 0) {
+                    output_ << ", ";
+                }
+                emit_ordered_value_use(arguments[index]);
+            }
+            output_ << "); }())";
+            return true;
+        }
+
         output_ << "tpp::runtime::make_vector<" << *element_type << ">(";
-        auto valid = true;
-        for (std::size_t index = 0;
-             index < construction.arguments.size();
-             ++index) {
-            if (index != 0) {
-                output_ << ", ";
-            }
-            if (!emit_expression(*construction.arguments[index])) {
-                valid = false;
-            }
+        if (!emit_expression(*construction.arguments.front())) {
+            output_ << ')';
+            return false;
         }
         output_ << ')';
-        return valid;
+        return true;
     }
 
     [[nodiscard]] bool emit_expression_node(
@@ -2289,6 +2567,7 @@ private:
     std::unordered_set<std::size_t> seen_symbol_ids_;
     std::unordered_set<std::size_t> seen_temp_ids_;
     std::size_t next_expected_temp_id_{0};
+    std::size_t next_ordered_value_id_{0};
     std::size_t indentation_level_{0};
     std::size_t loop_depth_{0};
     bool uses_vector_{false};

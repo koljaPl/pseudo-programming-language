@@ -26,7 +26,7 @@ int main()
             continue;
         }
     }
-    std::vector<bool> tpp_variable_3 = tpp::runtime::make_vector<bool>(std::int64_t{2}, true);
+    std::vector<bool> tpp_variable_3 = ([&]() -> std::vector<bool> { std::int64_t tpp_ordered_0 = std::int64_t{2}; bool tpp_ordered_1 = true; return tpp::runtime::make_vector<bool>(static_cast<std::int64_t&&>(tpp_ordered_0), static_cast<bool&&>(tpp_ordered_1)); }());
     {
         const std::vector<bool> tpp_iterable_4 = tpp_variable_3;
         for ([[maybe_unused]] bool tpp_variable_4 : tpp_iterable_4)
