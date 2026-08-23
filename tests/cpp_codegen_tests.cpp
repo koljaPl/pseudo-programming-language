@@ -2292,6 +2292,195 @@ void malformed_grouping_cannot_bypass_print_validation()
     check_has_diagnostic(diagnostics, "grouped expression type");
 }
 
+void malformed_lowered_programs_fail_without_partial_output()
+{
+    constexpr auto span = tpp::SourceSpan{tpp::SourceId{0}, 0, 1};
+    constexpr auto later_span = tpp::SourceSpan{tpp::SourceId{0}, 2, 3};
+    tpp::TypeContext types;
+
+    {
+        auto program = make_lowered_main(
+            span,
+            types.integer_type(),
+            tpp::LoweredStatement{
+                .span = span,
+                .node = tpp::LoweredReturnStatement{
+                    .value = make_lowered_expression(
+                        span,
+                        types.integer_type(),
+                        tpp::LoweredIntegerLiteralExpression{.lexeme = "0"}),
+                },
+            });
+        program.functions.front().return_type = tpp::TypeId{999};
+        tpp::DiagnosticEngine diagnostics;
+
+        const auto generated = tpp::generate_cpp(program, types, diagnostics);
+
+        TPP_CHECK(!generated.has_value());
+        check_has_diagnostic(diagnostics, "function return type has an unknown type");
+    }
+
+    {
+        auto program = make_lowered_main(
+            span,
+            types.integer_type(),
+            tpp::LoweredStatement{
+                .span = span,
+                .node = tpp::LoweredReturnStatement{
+                    .value = make_lowered_expression(
+                        span,
+                        types.integer_type(),
+                        tpp::LoweredStorageExpression{
+                            .storage = tpp::SymbolId{999},
+                        }),
+                },
+            });
+        tpp::DiagnosticEngine diagnostics;
+
+        const auto generated = tpp::generate_cpp(program, types, diagnostics);
+
+        TPP_CHECK(!generated.has_value());
+        check_has_diagnostic(diagnostics, "references an inactive symbol");
+    }
+
+    {
+        tpp::LoweredProgram program{span};
+        program.functions.push_back(tpp::LoweredFunction{
+            .span = span,
+            .name_span = span,
+            .symbol = tpp::SymbolId{0},
+            .return_type = types.integer_type(),
+            .parameters = {},
+            .body = nullptr,
+            .is_main = true,
+        });
+        tpp::DiagnosticEngine diagnostics;
+
+        const auto generated = tpp::generate_cpp(program, types, diagnostics);
+
+        TPP_CHECK(!generated.has_value());
+        check_has_diagnostic(diagnostics, "function has no body");
+    }
+
+    {
+        auto program = make_lowered_main(
+            span,
+            types.integer_type(),
+            tpp::LoweredStatement{
+                .span = span,
+                .node = tpp::LoweredExpressionStatement{
+                    .expression = nullptr,
+                },
+            });
+        program.functions.front().body->statements.push_back(
+            tpp::LoweredStatement{
+                .span = later_span,
+                .node = tpp::LoweredExpressionStatement{
+                    .expression = nullptr,
+                },
+            });
+        tpp::DiagnosticEngine diagnostics;
+
+        const auto generated = tpp::generate_cpp(program, types, diagnostics);
+
+        TPP_CHECK(!generated.has_value());
+        TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{2});
+        const auto reported = diagnostics.diagnostics();
+        TPP_CHECK(reported[0].primary_span.has_value());
+        TPP_CHECK(reported[1].primary_span.has_value());
+        TPP_CHECK_EQ(reported[0].primary_span->source, span.source);
+        TPP_CHECK_EQ(reported[0].primary_span->begin, span.begin);
+        TPP_CHECK_EQ(reported[0].primary_span->end, span.end);
+        TPP_CHECK_EQ(reported[1].primary_span->source, later_span.source);
+        TPP_CHECK_EQ(reported[1].primary_span->begin, later_span.begin);
+        TPP_CHECK_EQ(reported[1].primary_span->end, later_span.end);
+    }
+
+    {
+        std::vector<tpp::LoweredExpressionPtr> arguments;
+        auto unknown_builtin = make_lowered_expression(
+            span,
+            types.void_type(),
+            tpp::LoweredBuiltinCallExpression{
+                .builtin = static_cast<tpp::BuiltinFunctionKind>(999),
+                .callee_span = span,
+                .arguments = std::move(arguments),
+            });
+        auto program = make_lowered_main(
+            span,
+            types.integer_type(),
+            tpp::LoweredStatement{
+                .span = span,
+                .node = tpp::LoweredExpressionStatement{
+                    .expression = std::move(unknown_builtin),
+                },
+            });
+        tpp::DiagnosticEngine diagnostics;
+
+        const auto generated = tpp::generate_cpp(program, types, diagnostics);
+
+        TPP_CHECK(!generated.has_value());
+        check_has_diagnostic(diagnostics, "unknown builtin function");
+    }
+
+    {
+        auto index = make_lowered_expression(
+            span,
+            types.integer_type(),
+            tpp::LoweredIndexExpression{
+                .container_type = types.integer_type(),
+                .base = make_lowered_expression(
+                    span,
+                    types.integer_type(),
+                    tpp::LoweredIntegerLiteralExpression{.lexeme = "1"}),
+                .index = make_lowered_expression(
+                    span,
+                    types.integer_type(),
+                    tpp::LoweredIntegerLiteralExpression{.lexeme = "0"}),
+            });
+        auto program = make_lowered_main(
+            span,
+            types.integer_type(),
+            tpp::LoweredStatement{
+                .span = span,
+                .node = tpp::LoweredReturnStatement{
+                    .value = std::move(index),
+                },
+            });
+        tpp::DiagnosticEngine diagnostics;
+
+        const auto generated = tpp::generate_cpp(program, types, diagnostics);
+
+        TPP_CHECK(!generated.has_value());
+        check_has_diagnostic(diagnostics, "base is not a string or vector");
+    }
+
+    {
+        const CheckedProgram checked{
+            "int main() { for value in 0..1 { print(value); } return 0; }"};
+        tpp::DiagnosticEngine lowering_diagnostics;
+        auto lowered = tpp::lower_program(
+            checked.program(),
+            checked.context(),
+            lowering_diagnostics);
+        TPP_CHECK(lowered.has_value());
+        TPP_CHECK(lowering_diagnostics.diagnostics().empty());
+        auto& body = *lowered->functions.front().body;
+        auto& range = require_variant<tpp::LoweredRangeStatement>(
+            body.statements.front().node);
+        range.begin_storage.id = tpp::TempId{99};
+        tpp::DiagnosticEngine diagnostics;
+
+        const auto generated = tpp::generate_cpp(
+            *lowered,
+            checked.types(),
+            diagnostics);
+
+        TPP_CHECK(!generated.has_value());
+        check_has_diagnostic(diagnostics, "deterministic preorder");
+    }
+}
+
 }
 
 int main()
@@ -2372,5 +2561,7 @@ int main()
          malformed_grouping_cannot_bypass_integer_validation},
         {"malformed grouping cannot bypass print validation",
          malformed_grouping_cannot_bypass_print_validation},
+        {"malformed lowered programs have no partial output",
+         malformed_lowered_programs_fail_without_partial_output},
     });
 }

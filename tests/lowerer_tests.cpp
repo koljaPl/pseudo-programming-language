@@ -751,6 +751,26 @@ void grouped_expression_requires_matching_recorded_operand_type()
 void malformed_ast_and_semantic_state_fail_without_partial_program()
 {
     {
+        const CheckedProgram checked{"int main() { return 0; }"};
+        const tpp::DeclarationInfo empty_declarations;
+        const auto context = tpp::LoweringContext{
+            .types = checked.types(),
+            .symbols = checked.symbols(),
+            .declarations = empty_declarations,
+            .resolutions = checked.resolutions(),
+            .type_info = checked.type_info(),
+        };
+        tpp::DiagnosticEngine diagnostics;
+        const auto lowered = tpp::lower_program(
+            checked.program(),
+            context,
+            diagnostics);
+        TPP_CHECK(!lowered.has_value());
+        TPP_CHECK(diagnostics.has_errors());
+        check_has_diagnostic(diagnostics, "function declaration has no symbol");
+    }
+
+    {
         const CheckedProgram checked{"int main() { print(1); return 0; }"};
         const tpp::ResolutionInfo empty_resolutions;
         const auto context = tpp::LoweringContext{
@@ -804,6 +824,52 @@ void malformed_ast_and_semantic_state_fail_without_partial_program()
         TPP_CHECK(!lowered.has_value());
         TPP_CHECK(diagnostics.has_errors());
         check_has_diagnostic(diagnostics, "malformed AST");
+    }
+
+    {
+        CheckedProgram checked{"int main() { return 0; }"};
+        require_ast_main(checked.program()).body.reset();
+        tpp::DiagnosticEngine diagnostics;
+
+        const auto lowered = checked.lower(diagnostics);
+
+        TPP_CHECK(!lowered.has_value());
+        TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{1});
+        check_has_diagnostic(diagnostics, "function 'main' has no body");
+    }
+
+    {
+        CheckedProgram checked{R"(int main() {
+    print(1);
+    print(2);
+    return 0;
+}
+)"};
+        auto& main = require_ast_main(checked.program());
+        TPP_CHECK(main.body != nullptr);
+        for (std::size_t index = 0; index < 2; ++index) {
+            auto& statement = require_variant<tpp::Statement>(
+                main.body->items[index]);
+            auto& expression_statement =
+                require_variant<tpp::ExpressionStatement>(statement.node);
+            TPP_CHECK(expression_statement.expression != nullptr);
+            auto& call = require_variant<tpp::CallExpression>(
+                expression_statement.expression->node);
+            TPP_CHECK_EQ(call.arguments.size(), std::size_t{1});
+            call.arguments.front().reset();
+        }
+        tpp::DiagnosticEngine diagnostics;
+
+        const auto lowered = checked.lower(diagnostics);
+
+        TPP_CHECK(!lowered.has_value());
+        TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{2});
+        const auto reported = diagnostics.diagnostics();
+        TPP_CHECK(reported[0].primary_span.has_value());
+        TPP_CHECK(reported[1].primary_span.has_value());
+        TPP_CHECK(reported[0].primary_span->begin
+                  < reported[1].primary_span->begin);
+        check_has_diagnostic(diagnostics, "call argument is missing");
     }
 }
 
