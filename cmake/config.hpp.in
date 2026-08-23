@@ -2,6 +2,9 @@
 
 #include <string_view>
 
+#define TPP_HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCLOSEFROM_NP \
+    @TPP_CONFIG_HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCLOSEFROM_NP@
+
 namespace tpp {
 
 inline constexpr std::string_view version =

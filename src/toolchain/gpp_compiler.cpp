@@ -1,5 +1,7 @@
 #include "pseudo/toolchain/gpp_compiler.hpp"
 
+#include "pseudo/config.hpp"
+
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -10,7 +12,8 @@
 #include <utility>
 #include <vector>
 
-#if defined(__unix__) || defined(__APPLE__)
+#if (defined(__unix__) || defined(__APPLE__)) \
+    && TPP_HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCLOSEFROM_NP
 #include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
@@ -99,6 +102,9 @@ GppCompilationResult make_result(
     return result;
 }
 
+#if (defined(__unix__) || defined(__APPLE__)) \
+    && TPP_HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCLOSEFROM_NP
+
 std::string with_system_error(
     const std::string_view prefix,
     const std::error_code error)
@@ -108,8 +114,6 @@ std::string with_system_error(
     message += error.message();
     return message;
 }
-
-#if defined(__unix__) || defined(__APPLE__)
 
 class ScopedWorkspace {
 public:
@@ -498,6 +502,12 @@ int spawn_compiler(
         setup_error = add_duplication_actions(
             actions, standard_error, STDERR_FILENO);
     }
+    if (setup_error == 0) {
+        // Keep this action last: the child needs the capture descriptors for
+        // the preceding dup2 actions, then must inherit nothing beyond stdio.
+        setup_error = ::posix_spawn_file_actions_addclosefrom_np(
+            actions.get(), STDERR_FILENO + 1);
+    }
     if (setup_error != 0) {
         return setup_error;
     }
@@ -651,7 +661,8 @@ bool is_executable_regular_file(
 GppCompilationResult GppCompiler::compile(
     const std::string_view generated_cpp) const
 {
-#if !defined(__unix__) && !defined(__APPLE__)
+#if (!defined(__unix__) && !defined(__APPLE__)) \
+    || !TPP_HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCLOSEFROM_NP
     static_cast<void>(generated_cpp);
     return make_result(
         GppCompilationStatus::unsupported_platform,

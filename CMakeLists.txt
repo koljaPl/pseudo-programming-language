@@ -8,6 +8,19 @@ project(
 
 set(TPP_PRERELEASE "alpha")
 
+include(CheckCXXSymbolExists)
+
+check_cxx_symbol_exists(
+    posix_spawn_file_actions_addclosefrom_np
+    "spawn.h"
+    TPP_HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCLOSEFROM_NP
+)
+
+set(TPP_CONFIG_HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCLOSEFROM_NP 0)
+if(TPP_HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCLOSEFROM_NP)
+    set(TPP_CONFIG_HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCLOSEFROM_NP 1)
+endif()
+
 file(MAKE_DIRECTORY "${PROJECT_BINARY_DIR}/generated/pseudo")
 
 configure_file(
@@ -32,6 +45,7 @@ add_library(tpp_compiler STATIC
     src/semantic/symbol_table.cpp
     src/semantic/declaration_info.cpp
     src/semantic/declaration_collector.cpp
+    src/semantic/entry_point_validator.cpp
     src/semantic/builtin.cpp
     src/semantic/resolution_info.cpp
     src/semantic/name_resolver.cpp
