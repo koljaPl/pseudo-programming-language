@@ -126,6 +126,34 @@ target_compile_definitions(
 )
 
 tpp_add_test(
+    acceptance_tests
+    acceptance_tests.cpp
+)
+
+target_compile_definitions(
+    acceptance_tests
+    PRIVATE TPP_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+
+tpp_add_test(
+    robustness_stress_tests
+    robustness_stress_tests.cpp
+)
+
+set_tests_properties(
+    acceptance_tests
+    PROPERTIES
+        LABELS acceptance
+        TIMEOUT 30
+)
+set_tests_properties(
+    robustness_stress_tests
+    PROPERTIES
+        LABELS stress
+        TIMEOUT 60
+)
+
+tpp_add_test(
     cli_tests
     cli_tests.cpp
     "${PROJECT_SOURCE_DIR}/app/cli.cpp"
@@ -177,6 +205,13 @@ function(tpp_add_cli_integration_test name)
             "-DEXPECTED_STDOUT_FILE=${TEST_STDOUT_FILE}"
             "-DEXPECTED_STDERR_FILE=${TEST_STDERR_FILE}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCliTest.cmake"
+    )
+
+    set_tests_properties(
+        "cli.integration.${name}"
+        PROPERTIES
+            LABELS cli
+            TIMEOUT 20
     )
 endfunction()
 
@@ -394,6 +429,39 @@ tpp_add_cli_integration_test(
     ARGS --emit-cpp "${invalid_lexical_source}"
 )
 
+set(multiple_lexical_errors_source
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/multiple_lexical_errors.tpp"
+)
+set(multiple_lexical_errors_stderr
+    "${CMAKE_CURRENT_BINARY_DIR}/multiple_lexical_errors.expected.stderr"
+)
+configure_file(
+    data/multiple_lexical_errors.expected.stderr.in
+    "${multiple_lexical_errors_stderr}"
+    @ONLY
+)
+
+tpp_add_cli_integration_test(
+    multiple_lexical_errors
+    EXIT_CODE 1
+    STDERR_FILE "${multiple_lexical_errors_stderr}"
+    ARGS "${multiple_lexical_errors_source}"
+)
+
+tpp_add_cli_integration_test(
+    suppress_dump_on_multiple_lexical_errors
+    EXIT_CODE 1
+    STDERR_FILE "${multiple_lexical_errors_stderr}"
+    ARGS --dump-ast "${multiple_lexical_errors_source}"
+)
+
+tpp_add_cli_integration_test(
+    suppress_emit_on_multiple_lexical_errors
+    EXIT_CODE 1
+    STDERR_FILE "${multiple_lexical_errors_stderr}"
+    ARGS --emit-cpp "${multiple_lexical_errors_source}"
+)
+
 set(invalid_syntax_source
     "${CMAKE_CURRENT_SOURCE_DIR}/data/invalid_syntax.tpp"
 )
@@ -425,6 +493,39 @@ tpp_add_cli_integration_test(
     EXIT_CODE 1
     STDERR "${invalid_syntax_diagnostic}"
     ARGS --emit-cpp "${invalid_syntax_source}"
+)
+
+set(multiple_syntax_errors_source
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/multiple_syntax_errors.tpp"
+)
+set(multiple_syntax_errors_stderr
+    "${CMAKE_CURRENT_BINARY_DIR}/multiple_syntax_errors.expected.stderr"
+)
+configure_file(
+    data/multiple_syntax_errors.expected.stderr.in
+    "${multiple_syntax_errors_stderr}"
+    @ONLY
+)
+
+tpp_add_cli_integration_test(
+    multiple_syntax_errors
+    EXIT_CODE 1
+    STDERR_FILE "${multiple_syntax_errors_stderr}"
+    ARGS "${multiple_syntax_errors_source}"
+)
+
+tpp_add_cli_integration_test(
+    suppress_dump_on_multiple_syntax_errors
+    EXIT_CODE 1
+    STDERR_FILE "${multiple_syntax_errors_stderr}"
+    ARGS --dump-ast "${multiple_syntax_errors_source}"
+)
+
+tpp_add_cli_integration_test(
+    suppress_emit_on_multiple_syntax_errors
+    EXIT_CODE 1
+    STDERR_FILE "${multiple_syntax_errors_stderr}"
+    ARGS --emit-cpp "${multiple_syntax_errors_source}"
 )
 
 set(duplicate_declaration_source
@@ -610,6 +711,22 @@ tpp_add_cli_integration_test(
     ARGS "${missing_source}"
 )
 
+add_test(
+    NAME cli.integration.deterministic_outputs
+    COMMAND
+        "${CMAKE_COMMAND}"
+        "-DCLI=$<TARGET_FILE:pseudo>"
+        "-DVALID_INPUT=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_combined.tpp"
+        "-DINVALID_INPUT=${multiple_syntax_errors_source}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCliDeterminism.cmake"
+)
+set_tests_properties(
+    cli.integration.deterministic_outputs
+    PROPERTIES
+        LABELS "cli;determinism"
+        TIMEOUT 30
+)
+
 find_program(TPP_GXX_EXECUTABLE NAMES g++)
 
 if(TPP_GXX_EXECUTABLE)
@@ -762,5 +879,43 @@ if(TPP_GXX_EXECUTABLE)
             "-DRUNTIME_INCLUDE=${PROJECT_SOURCE_DIR}/runtime/include"
             "-DEXPECTED_STDOUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_foreach.expected.stdout"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCodegenExecution.cmake"
+    )
+
+    add_test(
+        NAME codegen.execute.combined
+        COMMAND
+            "${CMAKE_COMMAND}"
+            "-DCLI=$<TARGET_FILE:pseudo>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_combined.tpp"
+            "-DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/codegen-combined.cpp"
+            "-DEXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/codegen-combined-exe"
+            "-DCXX=${TPP_GXX_EXECUTABLE}"
+            "-DRUNTIME_INCLUDE=${PROJECT_SOURCE_DIR}/runtime/include"
+            "-DSTDIN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_combined.stdin"
+            "-DEXPECTED_STDOUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_combined.expected.stdout"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCodegenExecution.cmake"
+    )
+
+    set(gpp_integration_tests
+        codegen.smoke.gxx
+        codegen.execute.strings
+        codegen.execute.string_input
+        codegen.execute.vectors
+        codegen.execute.nested_vectors
+        codegen.execute.integer_input
+        codegen.execute.runtime_io
+        codegen.execute.loop_ranges
+        codegen.execute.nested_loops
+        codegen.execute.foreach
+        codegen.execute.combined
+    )
+    if(UNIX)
+        list(APPEND gpp_integration_tests gpp_compiler.actual_gxx)
+    endif()
+    set_tests_properties(
+        ${gpp_integration_tests}
+        PROPERTIES
+            LABELS e2e
+            TIMEOUT 60
     )
 endif()

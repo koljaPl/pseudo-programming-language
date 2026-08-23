@@ -1,0 +1,15 @@
+@multiple_syntax_errors_source@:1:13: error: expected expression
+  1 | int first = ;
+    |             ^
+@multiple_syntax_errors_source@:5:17: error: expected expression
+  5 |     int local = ;
+    |                 ^
+@multiple_syntax_errors_source@:7:5: error: expected ';' after break statement
+  7 |     continue
+    |     ^
+@multiple_syntax_errors_source@:8:5: error: expected ';' after continue statement
+  8 |     return;
+    |     ^
+@multiple_syntax_errors_source@:11:15: error: expected expression
+  11 | string last = ;
+     |               ^

@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 
@@ -60,6 +61,24 @@ void check_resolution(
     const auto actual = resolutions.resolution_for(reference);
     TPP_CHECK(actual.has_value());
     TPP_CHECK_EQ(*actual, expected);
+}
+
+void check_valid_compilation_state(
+    const tpp::CompilationSession& session)
+{
+    TPP_CHECK(!session.diagnostics().has_errors());
+    TPP_CHECK(session.diagnostics().diagnostics().empty());
+    TPP_CHECK(session.program().has_value());
+    TPP_CHECK_EQ(session.program()->declarations.size(), std::size_t{1});
+    TPP_CHECK_EQ(session.tokens().size(), std::size_t{10});
+    TPP_CHECK_EQ(session.tokens().front().span.source, tpp::SourceId{0});
+    TPP_CHECK_EQ(session.tokens().back().span.source, tpp::SourceId{0});
+    TPP_CHECK_EQ(session.symbols().scope_count(), std::size_t{2});
+    TPP_CHECK_EQ(session.symbols().symbol_count(), std::size_t{1});
+    TPP_CHECK(!session.declarations().empty());
+    TPP_CHECK(session.resolutions().empty());
+    TPP_CHECK(!session.type_info().empty());
+    TPP_CHECK_EQ(session.types().type_count(), std::size_t{5});
 }
 
 void empty_source_produces_only_eof()
@@ -324,6 +343,144 @@ void compilation_session_can_be_reused_without_stale_results()
     TPP_CHECK(!session.program().has_value());
     TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
     check_fresh_semantic_state(session);
+}
+
+void every_failed_stage_can_be_sandwiched_between_valid_compilations()
+{
+    tpp::CompilationSession session;
+    const tpp::Compiler compiler;
+    const auto valid = data_path("valid_lexical.tpp");
+
+    const auto check_transition =
+        [&]<typename CheckInvalid>(
+            const std::string_view invalid_file,
+            CheckInvalid&& check_invalid) {
+            TPP_CHECK(compiler.compile(valid, session));
+            check_valid_compilation_state(session);
+
+            TPP_CHECK(!compiler.compile(
+                data_path(std::string{invalid_file}),
+                session));
+            TPP_CHECK(session.diagnostics().has_errors());
+            TPP_CHECK(!session.tokens().empty());
+            TPP_CHECK_EQ(
+                session.tokens().front().span.source,
+                tpp::SourceId{0});
+            std::forward<CheckInvalid>(check_invalid)(session);
+
+            TPP_CHECK(compiler.compile(valid, session));
+            check_valid_compilation_state(session);
+        };
+
+    check_transition(
+        "invalid_lexical.tpp",
+        [](const tpp::CompilationSession& failed) {
+            TPP_CHECK(!failed.program().has_value());
+            check_fresh_semantic_state(failed);
+        });
+    check_transition(
+        "invalid_syntax.tpp",
+        [](const tpp::CompilationSession& failed) {
+            TPP_CHECK(failed.program().has_value());
+            check_fresh_semantic_state(failed);
+        });
+    check_transition(
+        "duplicate_declaration.tpp",
+        [](const tpp::CompilationSession& failed) {
+            TPP_CHECK(failed.program().has_value());
+            TPP_CHECK(!failed.declarations().empty());
+            TPP_CHECK(failed.resolutions().empty());
+            TPP_CHECK(failed.type_info().empty());
+        });
+    check_transition(
+        "unknown_name.tpp",
+        [](const tpp::CompilationSession& failed) {
+            TPP_CHECK(failed.program().has_value());
+            TPP_CHECK(!failed.declarations().empty());
+            TPP_CHECK(!failed.resolutions().empty());
+            TPP_CHECK(failed.type_info().empty());
+        });
+    check_transition(
+        "type_error.tpp",
+        [](const tpp::CompilationSession& failed) {
+            TPP_CHECK(failed.program().has_value());
+            TPP_CHECK(!failed.declarations().empty());
+            TPP_CHECK(!failed.type_info().empty());
+        });
+    check_transition(
+        "control_flow_error.tpp",
+        [](const tpp::CompilationSession& failed) {
+            TPP_CHECK(failed.program().has_value());
+            TPP_CHECK(!failed.declarations().empty());
+            TPP_CHECK(!failed.type_info().empty());
+        });
+}
+
+void declaration_errors_gate_all_dependent_passes()
+{
+    tpp::CompilationSession session;
+    const tpp::Compiler compiler;
+
+    TPP_CHECK(!compiler.compile(
+        data_path(
+            "corpus/invalid/declaration/"
+            "gates_resolution_types_and_flow.tpp"),
+        session));
+
+    const auto diagnostics = session.diagnostics().diagnostics();
+    TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
+    TPP_CHECK_EQ(diagnostics.size(), std::size_t{2});
+    TPP_CHECK_EQ(
+        diagnostics[0].message,
+        std::string{"duplicate declaration of 'duplicate'"});
+    TPP_CHECK_EQ(diagnostics[0].severity, tpp::DiagnosticSeverity::error);
+    TPP_CHECK_EQ(
+        diagnostics[1].message,
+        std::string{"previous declaration is here"});
+    TPP_CHECK_EQ(diagnostics[1].severity, tpp::DiagnosticSeverity::note);
+    TPP_CHECK(!session.declarations().empty());
+    TPP_CHECK(session.resolutions().empty());
+    TPP_CHECK(session.type_info().empty());
+}
+
+void name_errors_gate_type_and_control_flow_checking()
+{
+    tpp::CompilationSession session;
+    const tpp::Compiler compiler;
+
+    TPP_CHECK(!compiler.compile(
+        data_path("corpus/invalid/name/gates_types_and_flow.tpp"),
+        session));
+
+    const auto diagnostics = session.diagnostics().diagnostics();
+    TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
+    TPP_CHECK_EQ(diagnostics.size(), std::size_t{1});
+    TPP_CHECK_EQ(
+        diagnostics.front().message,
+        std::string{"unknown name 'missing'"});
+    TPP_CHECK(!session.declarations().empty());
+    TPP_CHECK(!session.resolutions().empty());
+    TPP_CHECK(session.type_info().empty());
+}
+
+void type_errors_gate_control_flow_checking()
+{
+    tpp::CompilationSession session;
+    const tpp::Compiler compiler;
+
+    TPP_CHECK(!compiler.compile(
+        data_path("corpus/invalid/type/gates_control_flow.tpp"),
+        session));
+
+    const auto diagnostics = session.diagnostics().diagnostics();
+    TPP_CHECK_EQ(session.diagnostics().error_count(), std::size_t{1});
+    TPP_CHECK_EQ(diagnostics.size(), std::size_t{1});
+    TPP_CHECK_EQ(
+        diagnostics.front().message,
+        std::string{
+            "cannot initialize 'int' with value of type 'string'"});
+    TPP_CHECK(!session.declarations().empty());
+    TPP_CHECK(!session.type_info().empty());
 }
 
 void compilation_session_reset_clears_semantic_state()
@@ -777,18 +934,26 @@ int main()
          syntax_error_fails_after_storing_the_recovered_program},
         {"compilation session reuse resets results",
          compilation_session_can_be_reused_without_stale_results},
+        {"every failed stage is isolated by valid compilations",
+         every_failed_stage_can_be_sandwiched_between_valid_compilations},
         {"compilation session reset clears semantic state",
          compilation_session_reset_clears_semantic_state},
         {"compiler populates semantic state after reset",
          compiler_populates_semantic_state_after_reset},
         {"declaration errors retain collected state",
          declaration_errors_fail_after_collecting_independent_state},
+        {"declaration errors gate dependent passes",
+         declaration_errors_gate_all_dependent_passes},
         {"compiler resolves user names and builtins",
          compiler_resolves_user_names_and_builtins},
         {"name errors retain partial semantic state",
          name_resolution_errors_retain_partial_semantic_state},
+        {"name errors gate type and flow checking",
+         name_errors_gate_type_and_control_flow_checking},
         {"type errors retain partial type information",
          type_errors_retain_partial_type_information},
+        {"type errors gate control-flow checking",
+         type_errors_gate_control_flow_checking},
         {"control-flow errors follow successful type checking",
          control_flow_errors_fail_after_type_checking},
         {"unreachable warnings preserve compilation success",

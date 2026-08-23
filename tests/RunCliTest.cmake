@@ -40,6 +40,7 @@ execute_process(
     RESULT_VARIABLE actual_exit
     OUTPUT_VARIABLE actual_stdout
     ERROR_VARIABLE actual_stderr
+    TIMEOUT 10
 )
 
 if(NOT "${actual_exit}" STREQUAL "${EXPECTED_EXIT}")

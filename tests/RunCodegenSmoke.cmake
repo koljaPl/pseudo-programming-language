@@ -9,6 +9,7 @@ execute_process(
     RESULT_VARIABLE emit_exit
     OUTPUT_FILE "${GENERATED}"
     ERROR_VARIABLE emit_stderr
+    TIMEOUT 10
 )
 
 if(NOT emit_exit EQUAL 0)
@@ -34,6 +35,7 @@ execute_process(
     RESULT_VARIABLE compile_exit
     OUTPUT_VARIABLE compile_stdout
     ERROR_VARIABLE compile_stderr
+    TIMEOUT 30
 )
 
 if(NOT compile_exit EQUAL 0)
