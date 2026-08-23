@@ -11,4 +11,3 @@ This language was originally created for competitive programming to improve and 
 If you wish, you can embed your C++ code within Pseudo code and it should compile without any issues, but you can also do this in other ways, such as Python-like syntax, and customise this via the ‘My Language’ settings.
 
 We realise that most developers write their code in C++ but are also familiar with simpler languages (Python and so on). To put it bluntly, if you’ve written code in Python, you’ll know what it’s like to write something terribly cumbersome in C++ when you could do it in a single line in Python – it’s not great, but speed almost always forces us to do it. We’re trying to solve this problem by allowing you to fully customise this language.
- 

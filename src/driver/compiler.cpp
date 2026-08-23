@@ -5,6 +5,7 @@
 #include "pseudo/parser/parser.hpp"
 #include "pseudo/semantic/control_flow_checker.hpp"
 #include "pseudo/semantic/declaration_collector.hpp"
+#include "pseudo/semantic/entry_point_validator.hpp"
 #include "pseudo/semantic/name_resolver.hpp"
 #include "pseudo/semantic/type_checker.hpp"
 
@@ -48,6 +49,15 @@ bool Compiler::compile(
         session.declarations(),
         session.diagnostics()};
     if (!collector.collect(*session.program())) {
+        return false;
+    }
+
+    EntryPointValidator entry_point_validator{
+        session.types(),
+        session.symbols(),
+        session.declarations(),
+        session.diagnostics()};
+    if (!entry_point_validator.validate(*session.program())) {
         return false;
     }
 
