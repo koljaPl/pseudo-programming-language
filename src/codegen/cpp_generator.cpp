@@ -416,6 +416,7 @@ private:
     [[nodiscard]] bool is_supported_local_type(const TypeId type) const noexcept
     {
         return type == types_.integer_type()
+            || type == types_.boolean_type()
             || type == types_.string_type()
             || type == types_.character_type()
             || is_vector_type(type);
@@ -842,7 +843,7 @@ private:
             report(
                 span,
                 "C++ code generation only supports initialized local int, "
-                "string, char, or vector variables yet");
+                "bool, string, char, or vector variables yet");
             return;
         }
         if (!known_type(statement.type, statement.name_span, "local variable")
@@ -863,7 +864,7 @@ private:
             report(
                 statement.name_span,
                 "C++ code generation only supports local variables of type "
-                "'int', 'string', 'char', or 'vector<T>' yet");
+                "'int', 'bool', 'string', 'char', or 'vector<T>' yet");
             return;
         }
         if (current_parameter_types_.contains(statement.symbol.value)
@@ -1018,30 +1019,17 @@ private:
 
         const auto direct_assignment =
             statement.operator_kind == LoweredAssignmentOperator::assign;
-        const auto integer_compound =
-            statement.target.type == types_.integer_type();
+        const auto integer_compound = !direct_assignment
+            && statement.target.type == types_.integer_type();
         const auto string_addition =
             statement.operator_kind == LoweredAssignmentOperator::add_assign
             && statement.target.type == types_.string_type();
         const auto indexed_target = !statement.target.indices.empty();
-        const auto supported_direct_assignment = !indexed_target
-            && ((direct_assignment
-                    && (statement.target.type == types_.string_type()
-                        || statement.target.type == types_.character_type()
-                        || is_vector_type(statement.target.type)))
-                || string_addition);
-        const auto supported_indexed_assignment = indexed_target
-            && (direct_assignment || integer_compound || string_addition);
-        if (!supported_direct_assignment
-            && !supported_indexed_assignment) {
+        if (!direct_assignment && !integer_compound && !string_addition) {
             report(
                 span,
-                indexed_target
-                    ? "malformed lowered state: assignment operator is "
-                      "incompatible with its indexed target type"
-                    : "C++ code generation only supports '=' for string, "
-                      "char, and vector assignments and '+=' for string "
-                      "assignments yet");
+                "malformed lowered state: assignment operator is "
+                "incompatible with its target type");
             return;
         }
         if (statement.target.type == types_.void_type()) {
@@ -1254,13 +1242,6 @@ private:
         const SourceSpan span,
         const LoweredBlockStatement& statement)
     {
-        if (loop_depth_ == 0) {
-            report(
-                span,
-                "C++ code generation does not support nested blocks outside "
-                "loops yet");
-            return;
-        }
         if (statement.block == nullptr) {
             report(
                 span,
@@ -1272,6 +1253,116 @@ private:
         output_ << "{\n";
         ++indentation_level_;
         emit_scoped_body(*statement.block);
+        --indentation_level_;
+        emit_indentation();
+        output_ << "}\n";
+    }
+
+    void emit_statement_node(
+        const SourceSpan span,
+        const LoweredIfStatement& statement)
+    {
+        if (statement.condition == nullptr) {
+            report(
+                span,
+                "malformed lowered state: if statement is missing a "
+                "condition");
+            return;
+        }
+        if (statement.then_block == nullptr) {
+            report(
+                span,
+                "malformed lowered state: if statement is missing a then "
+                "block");
+            return;
+        }
+        if (!known_type(
+                statement.condition->type,
+                statement.condition->span,
+                "if condition")) {
+            return;
+        }
+        if (statement.condition->type != types_.boolean_type()) {
+            report(
+                statement.condition->span,
+                "malformed lowered state: if condition does not have type "
+                "'bool'");
+            return;
+        }
+
+        emit_indentation();
+        output_ << "if (";
+        if (!emit_expression(*statement.condition)) {
+            output_ << ")\n";
+            return;
+        }
+        output_ << ")\n";
+        emit_indentation();
+        output_ << "{\n";
+        ++indentation_level_;
+        emit_scoped_body(*statement.then_block);
+        --indentation_level_;
+        emit_indentation();
+        output_ << "}\n";
+
+        if (statement.else_block != nullptr) {
+            emit_indentation();
+            output_ << "else\n";
+            emit_indentation();
+            output_ << "{\n";
+            ++indentation_level_;
+            emit_scoped_body(*statement.else_block);
+            --indentation_level_;
+            emit_indentation();
+            output_ << "}\n";
+        }
+    }
+
+    void emit_statement_node(
+        const SourceSpan span,
+        const LoweredWhileStatement& statement)
+    {
+        if (statement.condition == nullptr) {
+            report(
+                span,
+                "malformed lowered state: while statement is missing a "
+                "condition");
+            return;
+        }
+        if (statement.body == nullptr) {
+            report(
+                span,
+                "malformed lowered state: while statement is missing a "
+                "body");
+            return;
+        }
+        if (!known_type(
+                statement.condition->type,
+                statement.condition->span,
+                "while condition")) {
+            return;
+        }
+        if (statement.condition->type != types_.boolean_type()) {
+            report(
+                statement.condition->span,
+                "malformed lowered state: while condition does not have "
+                "type 'bool'");
+            return;
+        }
+
+        emit_indentation();
+        output_ << "while (";
+        if (!emit_expression(*statement.condition)) {
+            output_ << ")\n";
+            return;
+        }
+        output_ << ")\n";
+        emit_indentation();
+        output_ << "{\n";
+        ++indentation_level_;
+        ++loop_depth_;
+        emit_scoped_body(*statement.body);
+        --loop_depth_;
         --indentation_level_;
         emit_indentation();
         output_ << "}\n";

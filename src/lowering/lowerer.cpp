@@ -329,6 +329,7 @@ private:
         const TypeId type) const noexcept
     {
         return type == context_.types.integer_type()
+            || type == context_.types.boolean_type()
             || type == context_.types.string_type()
             || type == context_.types.character_type()
             || is_vector_type(type);
@@ -934,7 +935,7 @@ std::optional<LoweredStatementNode> Lowerer::lower_statement_node(
         report(
             declaration.type.span,
             "C++ code generation only supports local variables of type "
-            "'int', 'string', 'char', or 'vector<T>' yet");
+            "'int', 'bool', 'string', 'char', or 'vector<T>' yet");
         return std::nullopt;
     }
     if (!valid_value_type(
@@ -946,7 +947,7 @@ std::optional<LoweredStatementNode> Lowerer::lower_statement_node(
     if (declaration.initializer == nullptr) {
         report(
             span,
-            "C++ code generation only supports initialized local int, "
+            "C++ code generation only supports initialized local int, bool, "
             "string, char, or vector variables yet");
         return std::nullopt;
     }
@@ -1127,29 +1128,16 @@ std::optional<LoweredStatementNode> Lowerer::lower_statement_node(
 
     const auto direct_assignment =
         statement.operator_kind == AssignmentOperator::assign;
-    const auto integer_compound =
-        *target_type == context_.types.integer_type();
+    const auto integer_compound = !direct_assignment
+        && *target_type == context_.types.integer_type();
     const auto string_addition =
         statement.operator_kind == AssignmentOperator::add_assign
         && *target_type == context_.types.string_type();
-    const auto indexed_target = !statement.target.indices.empty();
-    const auto supported_direct_assignment = !indexed_target
-        && ((direct_assignment
-                && (*target_type == context_.types.string_type()
-                    || *target_type == context_.types.character_type()
-                    || is_vector_type(*target_type)))
-            || string_addition);
-    const auto supported_indexed_assignment = indexed_target
-        && (direct_assignment || integer_compound || string_addition);
-    if (!supported_direct_assignment && !supported_indexed_assignment) {
+    if (!direct_assignment && !integer_compound && !string_addition) {
         report(
             span,
-            indexed_target
-                ? "malformed semantic state: assignment operator is "
-                  "incompatible with its indexed target type"
-                : "C++ code generation only supports '=' for string, char, "
-                  "and vector assignments and '+=' for string assignments "
-                  "yet");
+            "malformed semantic state: assignment operator is incompatible "
+            "with its target type");
         return std::nullopt;
     }
 
@@ -1202,18 +1190,84 @@ std::optional<LoweredStatementNode> Lowerer::lower_statement_node(
 
 std::optional<LoweredStatementNode> Lowerer::lower_statement_node(
     const SourceSpan span,
-    const IfStatement&)
+    const IfStatement& statement)
 {
-    report(span, "C++ code generation does not support if statements yet");
-    return std::nullopt;
+    if (statement.condition == nullptr) {
+        report(span, "malformed AST: if statement is missing a condition");
+        return std::nullopt;
+    }
+    if (statement.then_block == nullptr) {
+        report(span, "malformed AST: if statement is missing a then block");
+        return std::nullopt;
+    }
+
+    const auto condition_type = expression_type(*statement.condition);
+    if (!condition_type.has_value()) {
+        return std::nullopt;
+    }
+    if (*condition_type != context_.types.boolean_type()) {
+        report(
+            statement.condition->span,
+            "malformed semantic state: if condition does not have type "
+            "'bool'");
+        return std::nullopt;
+    }
+
+    auto condition = lower_expression(*statement.condition);
+    auto then_block = lower_scoped_block(*statement.then_block);
+    LoweredBlockPtr else_block;
+    if (statement.else_block != nullptr) {
+        else_block = lower_scoped_block(*statement.else_block);
+    }
+    if (condition == nullptr || then_block == nullptr
+        || (statement.else_block != nullptr && else_block == nullptr)) {
+        return std::nullopt;
+    }
+
+    return LoweredStatementNode{LoweredIfStatement{
+        .condition = std::move(condition),
+        .then_block = std::move(then_block),
+        .else_block = std::move(else_block),
+    }};
 }
 
 std::optional<LoweredStatementNode> Lowerer::lower_statement_node(
     const SourceSpan span,
-    const WhileStatement&)
+    const WhileStatement& statement)
 {
-    report(span, "C++ code generation does not support while statements yet");
-    return std::nullopt;
+    if (statement.condition == nullptr) {
+        report(span, "malformed AST: while statement is missing a condition");
+        return std::nullopt;
+    }
+    if (statement.body == nullptr) {
+        report(span, "malformed AST: while statement is missing a body");
+        return std::nullopt;
+    }
+
+    const auto condition_type = expression_type(*statement.condition);
+    if (!condition_type.has_value()) {
+        return std::nullopt;
+    }
+    if (*condition_type != context_.types.boolean_type()) {
+        report(
+            statement.condition->span,
+            "malformed semantic state: while condition does not have type "
+            "'bool'");
+        return std::nullopt;
+    }
+
+    auto condition = lower_expression(*statement.condition);
+    ++loop_depth_;
+    auto body = lower_scoped_block(*statement.body);
+    --loop_depth_;
+    if (condition == nullptr || body == nullptr) {
+        return std::nullopt;
+    }
+
+    return LoweredStatementNode{LoweredWhileStatement{
+        .condition = std::move(condition),
+        .body = std::move(body),
+    }};
 }
 
 std::optional<LoweredStatementNode> Lowerer::lower_statement_node(
@@ -1589,13 +1643,6 @@ std::optional<LoweredStatementNode> Lowerer::lower_statement_node(
     const SourceSpan span,
     const BlockStatement& statement)
 {
-    if (loop_depth_ == 0) {
-        report(
-            span,
-            "C++ code generation does not support nested blocks outside "
-            "loops yet");
-        return std::nullopt;
-    }
     if (statement.block == nullptr) {
         report(span, "malformed AST: nested block is missing its body");
         return std::nullopt;

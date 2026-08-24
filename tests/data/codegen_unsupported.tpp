@@ -1,1 +1,1 @@
-int main() { bool value = true; }
+int main() { bool value; }
