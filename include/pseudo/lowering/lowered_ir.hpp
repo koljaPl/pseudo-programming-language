@@ -204,6 +204,17 @@ struct LoweredBlockStatement {
     LoweredBlockPtr block;
 };
 
+struct LoweredIfStatement {
+    LoweredExpressionPtr condition;
+    LoweredBlockPtr then_block;
+    LoweredBlockPtr else_block;
+};
+
+struct LoweredWhileStatement {
+    LoweredExpressionPtr condition;
+    LoweredBlockPtr body;
+};
+
 enum class LoweredRangeConditionKind {
     cursor_less_than_end,
     active,
@@ -247,6 +258,8 @@ using LoweredStatementNode = std::variant<
     LoweredBreakStatement,
     LoweredContinueStatement,
     LoweredBlockStatement,
+    LoweredIfStatement,
+    LoweredWhileStatement,
     LoweredRangeStatement,
     LoweredForEachStatement>;
 

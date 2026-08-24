@@ -608,6 +608,153 @@ void foreach_uses_typed_owned_snapshots_and_nested_control_flow()
         tpp::LoweredVectorConstructionExpression>(temporary.iterable->node));
 }
 
+void conditionals_while_blocks_and_assignments_are_structured()
+{
+    CheckedProgram checked{R"(int main() {
+    bool condition = true;
+    int outer = 0;
+    if condition {
+        int value = 1;
+        outer = value;
+    } else {
+        int value = 2;
+        outer = value;
+    }
+    while outer < 3 {
+        if condition {
+            outer += 1;
+            continue;
+        } else {
+            break;
+        }
+    }
+    { int outer = 7; print(outer); }
+    return outer;
+}
+)"};
+    tpp::DiagnosticEngine diagnostics;
+    const auto lowered = checked.lower(diagnostics);
+
+    TPP_CHECK(lowered.has_value());
+    TPP_CHECK(diagnostics.diagnostics().empty());
+    const auto& main = require_main(*lowered);
+    TPP_CHECK(main.body != nullptr);
+    TPP_CHECK_EQ(main.body->statements.size(), std::size_t{6});
+
+    const auto& conditional =
+        require_statement_node<tpp::LoweredIfStatement>(*main.body, 2);
+    TPP_CHECK(conditional.condition != nullptr);
+    TPP_CHECK_EQ(
+        conditional.condition->type,
+        checked.types().boolean_type());
+    TPP_CHECK(conditional.then_block != nullptr);
+    TPP_CHECK(conditional.else_block != nullptr);
+    const auto& then_assignment =
+        require_statement_node<tpp::LoweredAssignmentStatement>(
+            *conditional.then_block,
+            1);
+    const auto& else_assignment =
+        require_statement_node<tpp::LoweredAssignmentStatement>(
+            *conditional.else_block,
+            1);
+    TPP_CHECK_EQ(then_assignment.target.storage, else_assignment.target.storage);
+    TPP_CHECK_EQ(
+        then_assignment.operator_kind,
+        tpp::LoweredAssignmentOperator::assign);
+
+    const auto& loop =
+        require_statement_node<tpp::LoweredWhileStatement>(*main.body, 3);
+    TPP_CHECK(loop.condition != nullptr);
+    TPP_CHECK_EQ(loop.condition->type, checked.types().boolean_type());
+    TPP_CHECK(loop.body != nullptr);
+    const auto& nested =
+        require_statement_node<tpp::LoweredIfStatement>(*loop.body, 0);
+    TPP_CHECK(nested.then_block != nullptr);
+    TPP_CHECK(nested.else_block != nullptr);
+    const auto& addition =
+        require_statement_node<tpp::LoweredAssignmentStatement>(
+            *nested.then_block,
+            0);
+    TPP_CHECK_EQ(
+        addition.operator_kind,
+        tpp::LoweredAssignmentOperator::add_assign);
+    TPP_CHECK(std::holds_alternative<tpp::LoweredContinueStatement>(
+        require_statement(*nested.then_block, 1).node));
+    TPP_CHECK(std::holds_alternative<tpp::LoweredBreakStatement>(
+        require_statement(*nested.else_block, 0).node));
+
+    const auto& standalone =
+        require_statement_node<tpp::LoweredBlockStatement>(*main.body, 4);
+    TPP_CHECK(standalone.block != nullptr);
+    const auto& shadow =
+        require_statement_node<tpp::LoweredVariableStatement>(
+            *standalone.block,
+            0);
+    const auto& outer =
+        require_statement_node<tpp::LoweredVariableStatement>(*main.body, 1);
+    TPP_CHECK(!(shadow.symbol == outer.symbol));
+
+    tpp::DiagnosticEngine repeated_diagnostics;
+    const auto repeated = checked.lower(repeated_diagnostics);
+    TPP_CHECK(repeated.has_value());
+    TPP_CHECK(repeated_diagnostics.diagnostics().empty());
+    const auto& repeated_main = require_main(*repeated);
+    TPP_CHECK(std::holds_alternative<tpp::LoweredIfStatement>(
+        require_statement(*repeated_main.body, 2).node));
+    TPP_CHECK(std::holds_alternative<tpp::LoweredWhileStatement>(
+        require_statement(*repeated_main.body, 3).node));
+}
+
+void malformed_conditional_and_while_state_is_rejected()
+{
+    {
+        CheckedProgram checked{"int main() { if true {} return 0; }"};
+        auto& main = require_ast_main(checked.program());
+        auto& statement = require_variant<tpp::Statement>(main.body->items[0]);
+        auto& conditional = require_variant<tpp::IfStatement>(statement.node);
+        conditional.condition.reset();
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!checked.lower(diagnostics).has_value());
+        check_has_diagnostic(diagnostics, "if statement is missing a condition");
+    }
+
+    {
+        CheckedProgram checked{"int main() { while false {} return 0; }"};
+        auto& main = require_ast_main(checked.program());
+        auto& statement = require_variant<tpp::Statement>(main.body->items[0]);
+        auto& loop = require_variant<tpp::WhileStatement>(statement.node);
+        loop.body.reset();
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!checked.lower(diagnostics).has_value());
+        check_has_diagnostic(diagnostics, "while statement is missing a body");
+    }
+
+    {
+        CheckedProgram checked{R"(int main() {
+    if true {}
+    print(1);
+    return 0;
+}
+)"};
+        auto& main = require_ast_main(checked.program());
+        auto& if_statement = require_variant<tpp::Statement>(main.body->items[0]);
+        auto& conditional = require_variant<tpp::IfStatement>(if_statement.node);
+        auto& print_statement =
+            require_variant<tpp::Statement>(main.body->items[1]);
+        auto& expression_statement =
+            require_variant<tpp::ExpressionStatement>(print_statement.node);
+        auto& call = require_variant<tpp::CallExpression>(
+            expression_statement.expression->node);
+        std::swap(conditional.condition, call.arguments[0]);
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!checked.lower(diagnostics).has_value());
+        check_has_diagnostic(diagnostics, "if condition does not have type 'bool'");
+    }
+}
+
 tpp::LoweredProgram lower_detached_program()
 {
     CheckedProgram checked{
@@ -886,6 +1033,10 @@ int main()
          ranges_make_ordered_deterministic_overflow_safe_temporaries},
         {"foreach snapshots and nested control flow",
          foreach_uses_typed_owned_snapshots_and_nested_control_flow},
+        {"conditionals while blocks and assignments",
+         conditionals_while_blocks_and_assignments_are_structured},
+        {"malformed conditional and while state",
+         malformed_conditional_and_while_state_is_rejected},
         {"lowered program owns its data",
          lowered_program_owns_data_after_ast_and_side_tables_die},
         {"signed minimum magnitude context",
