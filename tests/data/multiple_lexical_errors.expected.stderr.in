@@ -1,0 +1,12 @@
+@multiple_lexical_errors_source@:1:1: error: unexpected '&'; use '&&' for logical and
+  1 | &
+    | ^
+@multiple_lexical_errors_source@:2:1: error: unexpected '|'; use '||' for logical or
+  2 | |
+    | ^
+@multiple_lexical_errors_source@:3:5: error: unknown escape sequence '\q'
+  3 | "bad\q"
+    |     ^~
+@multiple_lexical_errors_source@:4:2: error: unknown escape sequence '\q'
+  4 | '\q'
+    |  ^~

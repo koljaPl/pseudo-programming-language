@@ -1,0 +1,3 @@
+@codegen_unsupported_source@:1:14: error: C++ code generation only supports initialized local int, bool, string, char, or vector variables yet
+  1 | int main() { bool value; }
+    |              ^~~~~~~~~~~

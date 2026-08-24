@@ -1,0 +1,522 @@
+(*
+ * The Pseudo Programming Language
+ * Target grammar for Version 0.01-alpha
+ *
+ * File extension: .tpp
+ *
+ * EBNF notation:
+ *
+ *   rule = expression ;
+ *   "text"        exact source-code text
+ *   A, B          A followed by B
+ *   A | B         either A or B
+ *   [ A ]         optional A
+ *   { A }         zero or more repetitions of A
+ *   ( A )         grouping
+ *   TOKEN         token produced by the lexer
+ *   ? text ?      informal character-class description
+ *
+ * Whitespace and comments are ignored by the parser.
+ * EOF is a special end-of-file token.
+ *)
+
+
+(* ============================================================
+ * Program and declarations
+ * ============================================================ *)
+
+program =
+    { top_level_declaration },
+    EOF
+    ;
+
+top_level_declaration =
+      function_declaration
+    | variable_declaration
+    ;
+
+(* A variable declaration at the top level declares a global variable. *)
+
+function_declaration =
+    return_type,
+    IDENTIFIER,
+    "(",
+    [ parameter_list ],
+    ")",
+    block
+    ;
+
+parameter_list =
+    parameter,
+    { ",", parameter }
+    ;
+
+parameter =
+    value_type,
+    IDENTIFIER
+    ;
+
+
+(* ============================================================
+ * Types
+ * ============================================================ *)
+
+return_type =
+      value_type
+    | "void"
+    ;
+
+value_type =
+      scalar_type
+    | vector_type
+    ;
+
+scalar_type =
+      "int"
+    | "bool"
+    | "char"
+    | "string"
+    ;
+
+vector_type =
+    "vector",
+    "<",
+    value_type,
+    ">"
+    ;
+
+
+(* ============================================================
+ * Blocks and statements
+ * ============================================================ *)
+
+block =
+    "{",
+    { block_item },
+    "}"
+    ;
+
+block_item =
+      function_declaration
+    | statement
+    ;
+
+statement =
+      variable_declaration
+    | assignment_statement
+    | expression_statement
+    | if_statement
+    | while_statement
+    | for_statement
+    | return_statement
+    | break_statement
+    | continue_statement
+    | block
+    ;
+
+
+(* ============================================================
+ * Variable declarations and assignments
+ * ============================================================ *)
+
+variable_declaration =
+    value_type,
+    IDENTIFIER,
+    [ "=", expression ],
+    ";"
+    ;
+
+assignment_statement =
+    assignment_target,
+    assignment_operator,
+    expression,
+    ";"
+    ;
+
+assignment_target =
+    IDENTIFIER,
+    { "[", expression, "]" }
+    ;
+
+assignment_operator =
+      "="
+    | "+="
+    | "-="
+    | "*="
+    | "/="
+    | "%="
+    ;
+
+expression_statement =
+    expression,
+    ";"
+    ;
+
+
+(* ============================================================
+ * Control flow
+ * ============================================================ *)
+
+if_statement =
+    "if",
+    expression,
+    block,
+    [ "else", block ]
+    ;
+
+while_statement =
+    "while",
+    expression,
+    block
+    ;
+
+for_statement =
+    "for",
+    IDENTIFIER,
+    "in",
+    expression,
+    [ range_operator, expression ],
+    block
+    ;
+
+range_operator =
+      ".."
+    | "..="
+    ;
+
+return_statement =
+    "return",
+    [ expression ],
+    ";"
+    ;
+
+break_statement =
+    "break",
+    ";"
+    ;
+
+continue_statement =
+    "continue",
+    ";"
+    ;
+
+
+
+(* ============================================================
+ * Expressions
+ *
+ * Precedence increases from top to bottom:
+ *
+ *   ||, or
+ *   &&, and
+ *   ==, !=
+ *   <, <=, >, >=
+ *   +, -
+ *   *, /, %
+ *   unary +, -, !, not
+ *   calls, indexing, member access
+ * ============================================================ *)
+
+expression =
+    logical_or_expression
+    ;
+
+logical_or_expression =
+    logical_and_expression,
+    { logical_or_operator, logical_and_expression }
+    ;
+
+logical_or_operator =
+      "||"
+    | "or"
+    ;
+
+logical_and_expression =
+    equality_expression,
+    { logical_and_operator, equality_expression }
+    ;
+
+logical_and_operator =
+      "&&"
+    | "and"
+    ;
+
+equality_expression =
+    comparison_expression,
+    [ equality_operator, comparison_expression ]
+    ;
+
+equality_operator =
+      "=="
+    | "!="
+    ;
+
+comparison_expression =
+    additive_expression,
+    [ comparison_operator, additive_expression ]
+    ;
+
+comparison_operator =
+      "<"
+    | "<="
+    | ">"
+    | ">="
+    ;
+
+additive_expression =
+    multiplicative_expression,
+    { additive_operator, multiplicative_expression }
+    ;
+
+additive_operator =
+      "+"
+    | "-"
+    ;
+
+multiplicative_expression =
+    unary_expression,
+    { multiplicative_operator, unary_expression }
+    ;
+
+multiplicative_operator =
+      "*"
+    | "/"
+    | "%"
+    ;
+
+unary_expression =
+      unary_operator, unary_expression
+    | postfix_expression
+    ;
+
+unary_operator =
+      "+"
+    | "-"
+    | "!"
+    | "not"
+    ;
+
+postfix_expression =
+    primary_expression,
+    { postfix_suffix }
+    ;
+
+postfix_suffix =
+      call_suffix
+    | index_suffix
+    | member_suffix
+    ;
+
+call_suffix =
+    "(",
+    [ argument_list ],
+    ")"
+    ;
+
+index_suffix =
+    "[",
+    expression,
+    "]"
+    ;
+
+member_suffix =
+    ".",
+    IDENTIFIER
+    ;
+
+argument_list =
+    expression,
+    { ",", expression }
+    ;
+
+primary_expression =
+      literal
+    | IDENTIFIER
+    | vector_construction
+    | parenthesized_expression
+    ;
+
+parenthesized_expression =
+    "(",
+    expression,
+    ")"
+    ;
+
+vector_construction =
+    vector_type,
+    "(",
+    [ argument_list ],
+    ")"
+    ;
+
+
+(* ============================================================
+ * Literals
+ * ============================================================ *)
+
+literal =
+      INTEGER_LITERAL
+    | BOOLEAN_LITERAL
+    | CHARACTER_LITERAL
+    | STRING_LITERAL
+    ;
+
+
+(* ============================================================
+ * Lexical grammar
+ * ============================================================ *)
+
+IDENTIFIER =
+    IDENTIFIER_START,
+    { IDENTIFIER_CONTINUE }
+    ;
+
+IDENTIFIER_START =
+      LETTER
+    | "_"
+    ;
+
+IDENTIFIER_CONTINUE =
+      LETTER
+    | DIGIT
+    | "_"
+    ;
+
+LETTER =
+      "A" | "B" | "C" | "D" | "E" | "F"
+    | "G" | "H" | "I" | "J" | "K" | "L"
+    | "M" | "N" | "O" | "P" | "Q" | "R"
+    | "S" | "T" | "U" | "V" | "W" | "X"
+    | "Y" | "Z"
+    | "a" | "b" | "c" | "d" | "e" | "f"
+    | "g" | "h" | "i" | "j" | "k" | "l"
+    | "m" | "n" | "o" | "p" | "q" | "r"
+    | "s" | "t" | "u" | "v" | "w" | "x"
+    | "y" | "z"
+    ;
+
+DIGIT =
+      "0" | "1" | "2" | "3" | "4"
+    | "5" | "6" | "7" | "8" | "9"
+    ;
+
+INTEGER_LITERAL =
+    DIGIT,
+    { DIGIT }
+    ;
+
+BOOLEAN_LITERAL =
+      "true"
+    | "false"
+    ;
+
+STRING_LITERAL =
+    DOUBLE_QUOTE,
+    { STRING_ELEMENT },
+    DOUBLE_QUOTE
+    ;
+
+STRING_ELEMENT =
+      STRING_CHARACTER
+    | ESCAPE_SEQUENCE
+    ;
+
+STRING_CHARACTER =
+    ? any source byte except double quote, backslash,
+      carriage return, and newline ?
+    ;
+
+CHARACTER_LITERAL =
+    SINGLE_QUOTE,
+    CHARACTER_ELEMENT,
+    SINGLE_QUOTE
+    ;
+
+CHARACTER_ELEMENT =
+      CHARACTER_CHARACTER
+    | ESCAPE_SEQUENCE
+    ;
+
+CHARACTER_CHARACTER =
+    ? exactly one ASCII byte except single quote, backslash,
+      carriage return, and newline ?
+    ;
+
+ESCAPE_SEQUENCE =
+    BACKSLASH,
+    ESCAPE_CODE
+    ;
+
+ESCAPE_CODE =
+      BACKSLASH
+    | DOUBLE_QUOTE
+    | SINGLE_QUOTE
+    | "n"
+    | "r"
+    | "t"
+    | "0"
+    ;
+
+DOUBLE_QUOTE =
+    ? ASCII U+0022, double quote ?
+    ;
+
+SINGLE_QUOTE =
+    ? ASCII U+0027, single quote ?
+    ;
+
+BACKSLASH =
+    ? ASCII U+005C, backslash ?
+    ;
+
+
+(* ============================================================
+ * Reserved words
+ *
+ * The lexer first reads an identifier-shaped sequence and then
+ * classifies it as:
+ *
+ * - a keyword;
+ * - a boolean literal;
+ * - a textual operator;
+ * - or an IDENTIFIER.
+ * ============================================================ *)
+
+RESERVED_WORD =
+      "int"
+    | "bool"
+    | "char"
+    | "string"
+    | "void"
+    | "vector"
+    | "true"
+    | "false"
+    | "if"
+    | "else"
+    | "while"
+    | "for"
+    | "in"
+    | "return"
+    | "break"
+    | "continue"
+    | "and"
+    | "or"
+    | "not"
+    ;
+
+
+(* ============================================================
+ * Ignored input
+ * ============================================================ *)
+
+WHITESPACE =
+      " "
+    | "\t"
+    | "\r"
+    | "\n"
+    ;
+
+LINE_COMMENT =
+    "//",
+    { ? any source character except carriage return and newline ? }
+    ;

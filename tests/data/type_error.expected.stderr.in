@@ -1,0 +1,3 @@
+@type_error_source@:2:17: error: cannot initialize 'int' with value of type 'string'
+  2 |     int value = "text";
+    |                 ^~~~~~
