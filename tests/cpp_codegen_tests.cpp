@@ -1127,29 +1127,22 @@ void unsupported_local_shapes_have_no_partial_output()
         std::string_view diagnostic;
     };
 
-    constexpr std::array<Case, 7> cases{
+    constexpr std::array<Case, 5> cases{
         Case{
             "int main() { string text; return 0; }",
-            "initialized local int, string, char, or vector"},
+            "initialized local int, bool, string, char, or vector"},
         Case{
             "int main() { char value; return 0; }",
-            "initialized local int, string, char, or vector"},
+            "initialized local int, bool, string, char, or vector"},
         Case{
             "int main() { vector<int> values; return 0; }",
-            "initialized local int, string, char, or vector"},
+            "initialized local int, bool, string, char, or vector"},
         Case{
             "int main() { int value; return 0; }",
-            "initialized local int, string, char, or vector"},
+            "initialized local int, bool, string, char, or vector"},
         Case{
-            "int main() { bool value = true; return 0; }",
-            "local variables of type 'int', 'string', 'char', or "
-            "'vector<T>'"},
-        Case{
-            "int main() { int value = 1; value = 2; return value; }",
-            "only supports '=' for string, char, and vector assignments"},
-        Case{
-            "int main() { int value = 1; value += 2; return value; }",
-            "only supports '=' for string, char, and vector assignments"},
+            "int main() { bool value; return 0; }",
+            "initialized local int, bool, string, char, or vector"},
     };
 
     for (const auto& test_case : cases) {
@@ -1708,20 +1701,16 @@ void malformed_and_unsupported_loops_have_no_partial_output()
     }
 
     {
-        const CheckedProgram checked{R"(int main() {
+        const auto output = generate_source(R"(int main() {
     for value in 0..1 {
         if true {}
         while false {}
     }
     return 0;
 }
-)"};
-        tpp::DiagnosticEngine diagnostics;
-
-        TPP_CHECK(!generate(checked, diagnostics).has_value());
-        TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{2});
-        check_has_diagnostic(diagnostics, "if statements");
-        check_has_diagnostic(diagnostics, "while statements");
+)");
+        tpp::test::check_contains(output, "        if (true)\n");
+        tpp::test::check_contains(output, "        while (false)\n");
     }
 
     {
@@ -1866,22 +1855,14 @@ void unsupported_program_shapes_report_without_partial_output()
         std::string_view diagnostic;
     };
 
-    constexpr std::array<Case, 4> cases{
+    constexpr std::array<Case, 2> cases{
         Case{
             "int global = 1; int main() { return 0; }",
             "global variables"},
         Case{
-            "void helper() { bool local = true; } "
-            "int main() { helper(); return 0; }",
-            "local variables"},
-        Case{
             "int outer() { int inner() { return 1; } return inner(); } "
             "int main() { return outer(); }",
             "nested functions"},
-        Case{
-            "int helper(int value) { value = 1; return value; } "
-            "int main() { return helper(0); }",
-            "only supports '=' for string, char, and vector assignments"},
     };
 
     for (const auto& test_case : cases) {
@@ -1901,29 +1882,158 @@ void unsupported_program_shapes_report_without_partial_output()
     }
 }
 
-void unsupported_body_errors_are_collected_independently()
+void conditionals_blocks_and_local_assignments_are_supported()
 {
-    const CheckedProgram checked{R"(int helper(int parameter) {
+    const auto output = generate_source(R"(int helper(int parameter) {
     bool local = true;
     print(local);
-    if true {}
-    while false {}
-    { print(parameter); }
+    if local { parameter = 10; } else { parameter += 1; }
+    while parameter > 0 {
+        parameter -= 1;
+        if parameter == 2 { break; }
+        if parameter == 3 { continue; }
+    }
+    { int parameter = 7; print(parameter); }
     return parameter;
 }
 int main() { return 0; }
-)"};
-    tpp::DiagnosticEngine diagnostics;
+)" );
 
-    const auto generated = generate(checked, diagnostics);
+    tpp::test::check_contains(output, "    bool tpp_variable_");
+    tpp::test::check_contains(output, "    if (tpp_variable_");
+    tpp::test::check_contains(output, "    else\n");
+    tpp::test::check_contains(output, "    while (");
+    tpp::test::check_contains(output, " -= std::int64_t{1};");
+    tpp::test::check_contains(output, "            break;\n");
+    tpp::test::check_contains(output, "            continue;\n");
+}
 
-    TPP_CHECK(!generated.has_value());
-    TPP_CHECK_EQ(diagnostics.error_count(), std::size_t{5});
-    check_has_diagnostic(diagnostics, "local variables");
-    check_has_diagnostic(diagnostics, "if statements");
-    check_has_diagnostic(diagnostics, "while statements");
-    check_has_diagnostic(diagnostics, "nested blocks");
-    check_has_diagnostic(diagnostics, "references to local");
+void complete_assignment_matrix_and_nested_control_flow_are_emitted()
+{
+    const auto output = generate_source(R"(int mutate(int value) {
+    value = 20;
+    value += 5;
+    value -= 2;
+    value *= 3;
+    value /= 2;
+    value %= 7;
+    return value;
+}
+
+int main() {
+    bool flag = true;
+    char letter = 'a';
+    string text = "a";
+    vector<int> values = vector<int>(2, 1);
+    int counter = 0;
+    flag = false;
+    letter = 'b';
+    text = "c";
+    text += "d";
+    values = vector<int>(2, 3);
+    values[0] = mutate(4);
+    values[1] += 2;
+    while counter < 2 && !flag {
+        if counter == 0 || flag {
+            counter += 1;
+        } else {
+            counter = counter + 1;
+        }
+    }
+    for copy in 0..1 { copy = 9; }
+    for copy in values { copy += 1; }
+    print(letter);
+    print(text);
+    print(values[0]);
+    return counter;
+}
+)" );
+
+    tpp::test::check_contains(output, "tpp_parameter_");
+    tpp::test::check_contains(output, " = std::int64_t{20};");
+    tpp::test::check_contains(output, " += std::int64_t{5};");
+    tpp::test::check_contains(output, " -= std::int64_t{2};");
+    tpp::test::check_contains(output, " *= std::int64_t{3};");
+    tpp::test::check_contains(output, " /= std::int64_t{2};");
+    tpp::test::check_contains(output, " %= std::int64_t{7};");
+    tpp::test::check_contains(output, " = false;");
+    tpp::test::check_contains(output, " = 'b';");
+    tpp::test::check_contains(output, " += std::string{\"d\", 1};");
+    tpp::test::check_contains(output, "while (");
+    tpp::test::check_contains(output, "if (");
+    TPP_CHECK_EQ(count_occurrences(output, " = std::int64_t{9};"), std::size_t{1});
+    tpp::test::check_contains(output, " += std::int64_t{1};");
+}
+
+void malformed_conditional_and_while_ir_has_no_partial_output()
+{
+    const tpp::TypeContext types;
+    const auto span = tpp::SourceSpan{tpp::SourceId{0}, 4, 8};
+
+    {
+        auto then_block = std::make_unique<tpp::LoweredBlock>(
+            tpp::LoweredBlock{.span = span, .statements = {}});
+        auto program = make_lowered_main(
+            span,
+            types.integer_type(),
+            tpp::LoweredStatement{
+                .span = span,
+                .node = tpp::LoweredIfStatement{
+                    .condition = nullptr,
+                    .then_block = std::move(then_block),
+                    .else_block = nullptr,
+                },
+            });
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!tpp::generate_cpp(program, types, diagnostics).has_value());
+        check_has_diagnostic(diagnostics, "if statement is missing a condition");
+    }
+
+    {
+        auto condition = make_lowered_expression(
+            span,
+            types.integer_type(),
+            tpp::LoweredIntegerLiteralExpression{.lexeme = "1"});
+        auto then_block = std::make_unique<tpp::LoweredBlock>(
+            tpp::LoweredBlock{.span = span, .statements = {}});
+        auto program = make_lowered_main(
+            span,
+            types.integer_type(),
+            tpp::LoweredStatement{
+                .span = span,
+                .node = tpp::LoweredIfStatement{
+                    .condition = std::move(condition),
+                    .then_block = std::move(then_block),
+                    .else_block = nullptr,
+                },
+            });
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!tpp::generate_cpp(program, types, diagnostics).has_value());
+        check_has_diagnostic(diagnostics, "if condition does not have type 'bool'");
+    }
+
+    {
+        auto condition = make_lowered_expression(
+            span,
+            types.boolean_type(),
+            tpp::LoweredBooleanLiteralExpression{.value = true});
+        auto program = make_lowered_main(
+            span,
+            types.integer_type(),
+            tpp::LoweredStatement{
+                .span = span,
+                .node = tpp::LoweredWhileStatement{
+                    .condition = std::move(condition),
+                    .body = nullptr,
+                },
+            });
+        tpp::DiagnosticEngine diagnostics;
+
+        TPP_CHECK(!tpp::generate_cpp(program, types, diagnostics).has_value());
+        check_has_diagnostic(diagnostics, "while statement is missing a body");
+    }
 }
 
 void read_int_expression_statement_uses_runtime_lowering()
@@ -2588,8 +2698,12 @@ int main()
         {"duplicate main", duplicate_main_is_rejected_before_emission},
         {"unsupported program shapes",
          unsupported_program_shapes_report_without_partial_output},
-        {"independent unsupported body errors",
-         unsupported_body_errors_are_collected_independently},
+        {"conditionals blocks and local assignments",
+         conditionals_blocks_and_local_assignments_are_supported},
+        {"complete assignments and nested control flow",
+         complete_assignment_matrix_and_nested_control_flow_are_emitted},
+        {"malformed conditional and while IR",
+         malformed_conditional_and_while_ir_has_no_partial_output},
         {"read_int expression statement",
          read_int_expression_statement_uses_runtime_lowering},
         {"malformed AST", malformed_ast_reports_instead_of_crashing},

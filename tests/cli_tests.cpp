@@ -484,6 +484,19 @@ void emit_cpp_generates_range_and_foreach_loops()
     TPP_CHECK(result.stderr_text.empty());
 }
 
+void emit_cpp_generates_conditionals_while_and_assignments()
+{
+    const auto input = std::filesystem::path(TPP_TEST_DATA_DIR)
+        / "codegen_conditionals_while.tpp";
+    const auto result = invoke({"--emit-cpp", input.string()});
+
+    TPP_CHECK_EQ(result.exit_code, 0);
+    TPP_CHECK_EQ(
+        result.stdout_text,
+        read_data_file("codegen_conditionals_while.expected.cpp"));
+    TPP_CHECK(result.stderr_text.empty());
+}
+
 void output_modes_are_mutually_exclusive()
 {
     const auto input =
@@ -543,11 +556,10 @@ void emit_cpp_is_suppressed_for_codegen_errors()
     TPP_CHECK_EQ(
         result.stderr_text,
         input.string()
-            + ":1:14: error: C++ code generation only supports local "
-              "variables of type 'int', 'string', 'char', or 'vector<T>' "
-              "yet\n"
-              "  1 | int main() { bool value = true; }\n"
-              "    |              ^~~~\n");
+            + ":1:14: error: C++ code generation only supports initialized "
+              "local int, bool, string, char, or vector variables yet\n"
+              "  1 | int main() { bool value; }\n"
+              "    |              ^~~~~~~~~~~\n");
 }
 
 void missing_file_is_a_compilation_error()
@@ -604,6 +616,8 @@ int main()
          emit_cpp_generates_runtime_input_and_output},
         {"emit C++ range and foreach loops",
          emit_cpp_generates_range_and_foreach_loops},
+        {"emit C++ conditionals while and assignments",
+         emit_cpp_generates_conditionals_while_and_assignments},
         {"output modes are mutually exclusive",
          output_modes_are_mutually_exclusive},
         {"emit C++ suppresses frontend errors",

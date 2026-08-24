@@ -416,7 +416,6 @@ void semantically_valid_unsupported_backend_fails_without_partial_cpp()
     TPP_CHECK(!generated.has_value());
     TPP_CHECK(session.diagnostics().has_errors());
     TPP_CHECK(has_diagnostic(session, "nested functions"));
-    TPP_CHECK(has_diagnostic(session, "while statements"));
 }
 
 void session_reuse_after_recovery_is_clean_and_repeatable()

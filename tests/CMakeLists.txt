@@ -403,6 +403,20 @@ tpp_add_cli_integration_test(
     ARGS --emit-cpp "${codegen_loops_source}"
 )
 
+set(codegen_conditionals_while_source
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_conditionals_while.tpp"
+)
+set(codegen_conditionals_while_expected
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_conditionals_while.expected.cpp"
+)
+
+tpp_add_cli_integration_test(
+    emit_cpp_conditionals_while
+    EXIT_CODE 0
+    STDOUT_FILE "${codegen_conditionals_while_expected}"
+    ARGS --emit-cpp "${codegen_conditionals_while_source}"
+)
+
 tpp_add_cli_integration_test(
     conflicting_output_modes
     EXIT_CODE 2
@@ -926,6 +940,35 @@ if(TPP_GXX_EXECUTABLE)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCodegenExecution.cmake"
     )
 
+    add_test(
+        NAME codegen.execute.while_even
+        COMMAND
+            "${CMAKE_COMMAND}"
+            "-DCLI=$<TARGET_FILE:pseudo>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_while_even.tpp"
+            "-DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/codegen-while-even.cpp"
+            "-DEXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/codegen-while-even-exe"
+            "-DCXX=${TPP_GXX_EXECUTABLE}"
+            "-DRUNTIME_INCLUDE=${PROJECT_SOURCE_DIR}/runtime/include"
+            "-DSTDIN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_while_even.stdin"
+            "-DEXPECTED_STDOUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_while_even.expected.stdout"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCodegenExecution.cmake"
+    )
+
+    add_test(
+        NAME codegen.execute.nested_control_flow
+        COMMAND
+            "${CMAKE_COMMAND}"
+            "-DCLI=$<TARGET_FILE:pseudo>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_nested_control_flow.tpp"
+            "-DGENERATED=${CMAKE_CURRENT_BINARY_DIR}/codegen-nested-control-flow.cpp"
+            "-DEXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/codegen-nested-control-flow-exe"
+            "-DCXX=${TPP_GXX_EXECUTABLE}"
+            "-DRUNTIME_INCLUDE=${PROJECT_SOURCE_DIR}/runtime/include"
+            "-DEXPECTED_STDOUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/codegen_nested_control_flow.expected.stdout"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCodegenExecution.cmake"
+    )
+
     set(gpp_integration_tests
         codegen.smoke.gxx
         codegen.execute.strings
@@ -939,6 +982,8 @@ if(TPP_GXX_EXECUTABLE)
         codegen.execute.foreach
         codegen.execute.combined
         codegen.execute.evaluation_order
+        codegen.execute.while_even
+        codegen.execute.nested_control_flow
     )
     if(UNIX AND TPP_HAVE_POSIX_SPAWN_FILE_ACTIONS_ADDCLOSEFROM_NP)
         list(APPEND gpp_integration_tests gpp_compiler.actual_gxx)
