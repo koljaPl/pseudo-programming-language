@@ -90,6 +90,8 @@ The suite covers the frontend, semantic passes, lowering, code generation, runti
 
 TPPL is fully open source. Built by competitors, for competitors—contributions, experiments, and ideas are welcome.
 
+Read the [contribution guide](CONTRIBUTING.md), follow the [Code of Conduct](CODE_OF_CONDUCT.md), and report vulnerabilities through the [security policy](SECURITY.md).
+
 ## Author
 
 The Pseudo Programming Language was created by **Nicklas Plugin** before his 16th birthday.
