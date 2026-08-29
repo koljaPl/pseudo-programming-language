@@ -16,15 +16,26 @@
 </p>
 
 <p align="center">
-  <a href="docs/goals_and_versions/version_0.01/goals.md">Language</a>
+  <a href="#implementation-status">Current status</a>
   · <a href="docs/grammar.ebnf">Grammar</a>
+  · <a href="docs/goals_and_versions/version_0.01/goals.md">Version goals</a>
   · <a href="#quick-start">Quick start</a>
   · <a href="#tests">Tests</a>
 </p>
 
 TPPL is a programming language built specifically for competitive programming. Its compact syntax feeds a real compiler frontend and semantic pipeline, then lowers to C++20 so contest code stays focused on the problem rather than boilerplate.
 
-**Current alpha.** The C++ backend supports top-level functions, initialized locals, typed expressions and assignments, `if`/`else`, `while`, range and for-each loops, strings, vectors, indexing, and runtime I/O. Globals, nested-function code generation, and uninitialized locals are not emitted yet.
+## Implementation status
+
+TPPL is a working but deliberately small alpha. It can compile a useful typed subset end to end, but it does not yet cover every kind of competitive-programming problem.
+
+| Status | Current support |
+| --- | --- |
+| **Available end to end** | `int`, `bool`, `char`, `string`, recursive `vector<T>`, top-level functions and recursion, initialized locals, expressions and assignments, `if`/`else`, `while`, ranges, for-each, checked indexing, and runtime I/O |
+| **Frontend only** | Globals, nested functions, and uninitialized locals are parsed and semantically checked, but the C++ backend deliberately rejects them |
+| **Not implemented** | Structs, records or classes; enums or sum types; fixed-size arrays; maps and sets; and a broader standard algorithm library |
+
+`vector<T>` is currently TPPL's only composite container, and user-defined data types are not available yet. The [Version 0.01 goals](docs/goals_and_versions/version_0.01/goals.md) describe the target design, not a guarantee that every item is already supported end to end.
 
 ## A contest-shaped language
 
@@ -73,6 +84,8 @@ cmake --build build --parallel
 g++ -std=c++20 -Iruntime/include solution.cpp -o solution
 ./solution
 ```
+
+`pseudo --emit-cpp` writes C++ source. Invoking `g++` and running the resulting executable are separate steps in the current CLI.
 
 ## Tests
 
