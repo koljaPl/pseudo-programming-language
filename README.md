@@ -109,8 +109,6 @@ Read the [contribution guide](CONTRIBUTING.md), follow the [Code of Conduct](COD
 
 The Pseudo Programming Language was created by **Nicklas Plugin** before his 16th birthday.
 
-He considers this the youngest age at which a programming language of this scale has been created.
-
 <p align="center">
   <sub>Released under the <a href="LICENSE">MIT License</a>.</sub>
 </p>
